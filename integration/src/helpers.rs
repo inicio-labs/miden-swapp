@@ -47,7 +47,7 @@ pub struct ClientSetup {
 /// or client building fails
 pub async fn setup_client() -> Result<ClientSetup> {
     // Initialize RPC connection
-    let endpoint = Endpoint::testnet();
+    let endpoint = Endpoint::localhost();
     let timeout_ms = 10_000;
     let rpc_client = Arc::new(GrpcClient::new(&endpoint, timeout_ms));
 
