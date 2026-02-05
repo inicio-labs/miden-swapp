@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     println!("========================================\n");
 
     // Bind and serve
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3010")
         .await
         .context("Failed to bind to port 3000")?;
 

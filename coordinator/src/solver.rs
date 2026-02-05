@@ -153,7 +153,7 @@ pub async fn run_solver_loop(
         }
 
         println!("⏸️  [Bob Solver] Scan complete. Sleeping for 5 seconds...\n");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 

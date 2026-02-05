@@ -7,6 +7,7 @@ use axum::{
 };
 use miden_client::{note::Note, utils::Deserializable};
 use serde::{Deserialize, Serialize};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::note_pool::{NotePool, Status};
 
@@ -98,8 +99,15 @@ async fn get_note_status(
 
 /// Create the API router with all routes
 pub fn create_api_routes(note_pool: NotePool) -> Router {
+    // Configure CORS to allow requests from any origin
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
         .route("/notes", post(submit_note))
         .route("/notes/:id", get(get_note_status))
+        .layer(cors)
         .with_state(note_pool)
 }
