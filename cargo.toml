@@ -2,7 +2,8 @@
 members = [
     "contracts/swapp-note",
     "contracts/basic-wallet",
-    "integration"
+    "integration",
+    "coordinator"
 ]
 resolver = "2"
 edition = "2021"
