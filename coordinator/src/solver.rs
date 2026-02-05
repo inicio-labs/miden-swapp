@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use integration::helpers::compute_p2id_tag_for_local_account;
 use miden_client::{
     keystore::FilesystemKeyStore,
-    note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata},
+    note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata, NoteTag},
     transaction::TransactionRequestBuilder,
     utils::{Deserializable, Serializable},
     Client, Felt, Word,
@@ -96,7 +96,8 @@ async fn execute_swap(
         .context("Failed to build P2ID recipient")?;
 
     // Compute P2ID tag from Alice's account ID (same as in integration tests)
-    let p2id_tag = compute_p2id_tag_for_local_account(alice_id);
+    let p2id_tag = values[7];
+    let p2id_tag = NoteTag::from(p2id_tag.as_int() as u32);
     let p2id_aux = Felt::new(solver_amount);
     let p2id_execution_hint = NoteExecutionHint::none();
 
@@ -131,6 +132,8 @@ async fn execute_swap(
     let tx_id = client
         .submit_new_transaction(bob_id, consume_request)
         .await
+        .inspect(|tx_id| println!("Swap transaction submitted: {:?}", tx_id))
+        .inspect_err(|e| println!("Failed to submit swap transaction: {:?}", e))
         .context("Failed to submit swap transaction")?;
 
     println!("         TX ID: {:?}", tx_id);
