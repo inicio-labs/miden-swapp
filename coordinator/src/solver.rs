@@ -1,14 +1,15 @@
 use anyhow::{Context, Result};
+use integration::helpers::compute_p2id_tag_for_local_account;
 use miden_client::{
     keystore::FilesystemKeyStore,
-    note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata, NoteType},
+    note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata},
     transaction::TransactionRequestBuilder,
     utils::{Deserializable, Serializable},
     Client, Felt, Word,
 };
 use miden_core::FieldElement;
 use miden_lib::note::utils::build_p2id_recipient;
-use miden_objects::{account::AccountId, asset::FungibleAsset, note::NoteDetails, note::NoteTag};
+use miden_objects::{account::AccountId, asset::FungibleAsset, note::NoteDetails};
 use rand::rngs::StdRng;
 use tokio::time::Duration;
 
@@ -94,9 +95,13 @@ async fn execute_swap(
     let p2id_recipient = build_p2id_recipient(alice_id, p2id_serial_num)
         .context("Failed to build P2ID recipient")?;
 
-    let p2id_tag = NoteTag::LocalAny(3221225472);
+    // Compute P2ID tag from Alice's account ID (same as in integration tests)
+    let p2id_tag = compute_p2id_tag_for_local_account(alice_id);
     let p2id_aux = Felt::new(solver_amount);
     let p2id_execution_hint = NoteExecutionHint::none();
+
+    // Use the same note type as the incoming note (public or private)
+    let p2id_note_type = note.metadata().note_type();
 
     let p2id_asset = FungibleAsset::new(requested_faucet_id, solver_amount)?;
     let p2id_note_assets = ClientNoteAssets::new(vec![p2id_asset.into()])
@@ -104,7 +109,7 @@ async fn execute_swap(
 
     let p2id_note_metadata = NoteMetadata::new(
         bob_id,
-        NoteType::Private,
+        p2id_note_type,
         p2id_tag,
         p2id_execution_hint,
         p2id_aux,
