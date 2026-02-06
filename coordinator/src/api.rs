@@ -5,7 +5,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use miden_client::{note::Note, utils::Deserializable};
+use miden_client::{
+    note::{Note, NoteFile},
+    utils::Deserializable,
+};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 

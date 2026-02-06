@@ -1,14 +1,18 @@
 use anyhow::{Context, Result};
 use integration::helpers::compute_p2id_tag_for_local_account;
 use miden_client::{
+    address::NetworkId,
     keystore::FilesystemKeyStore,
-    note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata},
-    transaction::TransactionRequestBuilder,
+    note::{
+        Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteFile, NoteMetadata, NoteTag,
+        NoteType,
+    },
+    transaction::{OutputNote, TransactionRequest, TransactionRequestBuilder},
     utils::{Deserializable, Serializable},
     Client, Felt, Word,
 };
 use miden_core::FieldElement;
-use miden_lib::note::utils::build_p2id_recipient;
+use miden_lib::note::{create_p2id_note, utils::build_p2id_recipient};
 use miden_objects::{account::AccountId, asset::FungibleAsset, note::NoteDetails};
 use rand::rngs::StdRng;
 use tokio::time::Duration;
@@ -57,8 +61,12 @@ async fn execute_swap(
     bob_id: AccountId,
     note: &Note,
 ) -> Result<Note> {
+    tokio::time::sleep(Duration::from_secs(10)).await;
     // Sync state first
     client.sync_state().await?;
+
+    // let note_file = NoteFile::NoteId(note.id());
+    // client.import_note(note_file).await?;
 
     // Extract note details
     let inputs = note.inputs();
@@ -78,6 +86,8 @@ async fn execute_swap(
         AccountId::try_from([requested_faucet_prefix, requested_faucet_suffix])?;
     let alice_id = AccountId::try_from([creator_prefix, creator_suffix])?;
 
+    println!("Alice ID: {}", alice_id.to_bech32(NetworkId::Testnet));
+
     // Full fill: solver provides exactly the requested amount
     let solver_amount = requested_amount;
 
@@ -96,7 +106,10 @@ async fn execute_swap(
         .context("Failed to build P2ID recipient")?;
 
     // Compute P2ID tag from Alice's account ID (same as in integration tests)
-    let p2id_tag = compute_p2id_tag_for_local_account(alice_id);
+    let p2id_tag = {
+        let val = values[7];
+        NoteTag::from(val.as_int() as u32)
+    };
     let p2id_aux = Felt::new(solver_amount);
     let p2id_execution_hint = NoteExecutionHint::none();
 
@@ -107,6 +120,20 @@ async fn execute_swap(
     let p2id_note_assets = ClientNoteAssets::new(vec![p2id_asset.into()])
         .context("Failed to create P2ID note assets")?;
 
+    println!("   📝 Creating P2ID note metadata...");
+    println!("      - Sender (Bob) ID: {}", bob_id.to_hex());
+    println!("      - Recipient (Alice) ID: {}", alice_id.to_hex());
+    println!(
+        "      - Requested Faucet ID: {}",
+        requested_faucet_id.to_hex()
+    );
+    println!("      - Requested Amount: {}", requested_amount);
+    println!("      - Solver Amount: {}", solver_amount);
+    println!("      - Note Type: {:?}", p2id_note_type);
+    println!("      - Tag: {:?}", p2id_tag);
+    println!("      - Execution Hint: {:?}", p2id_execution_hint);
+    println!("      - Aux (solver amount): {}", p2id_aux.as_int());
+
     let p2id_note_metadata = NoteMetadata::new(
         bob_id,
         p2id_note_type,
@@ -115,25 +142,73 @@ async fn execute_swap(
         p2id_aux,
     )
     .context("Failed to create P2ID note metadata")?;
+    println!("   ✓ P2ID note metadata created");
 
+    println!("   📝 Creating P2ID note...");
+    println!(
+        "      - P2ID Asset Faucet: {}",
+        requested_faucet_id.to_hex()
+    );
+    println!("      - P2ID Asset Amount: {}", solver_amount);
     let p2id_note = Note::new(p2id_note_assets, p2id_note_metadata, p2id_recipient.clone());
+    println!("   ✓ P2ID note created");
+    println!("      - P2ID Note ID: {}", p2id_note.id().to_hex());
+    println!("      - Input Swap Note ID: {}", note.id().to_hex());
+
     let p2id_note_details = NoteDetails::from(&p2id_note);
     let expected_future_notes = vec![(p2id_note_details, p2id_tag)];
+    println!(
+        "   📋 Expected future notes prepared: {}",
+        expected_future_notes.len()
+    );
 
     // Build and submit transaction
     let consume_request = TransactionRequestBuilder::new()
-        .authenticated_input_notes([(note.id(), Some(note_args))])
+        .unauthenticated_input_notes([(note.clone(), Some(note_args))])
+        // .authenticated_input_notes([(note.id(), Some(note_args))])
         .expected_future_notes(expected_future_notes)
         .expected_output_recipients(vec![p2id_recipient])
         .build()
         .context("Failed to build swap transaction")?;
 
+    // Print Bob's balance BEFORE transaction
+    println!("   💰 Bob's balance BEFORE transaction:");
+    if let Ok(Some(bob_account_before)) = client.get_account(bob_id).await {
+        for asset in bob_account_before.account().vault().assets() {
+            if let miden_objects::asset::Asset::Fungible(fa) = asset {
+                println!(
+                    "      - Faucet {}: {}",
+                    fa.faucet_id().to_hex(),
+                    fa.amount()
+                );
+            }
+        }
+    }
+
     let tx_id = client
         .submit_new_transaction(bob_id, consume_request)
         .await
+        .inspect(|tx_id| println!("   ✅ TX ID: {:?}", tx_id))
+        .inspect_err(|e| eprintln!("   ❌ Error submitting swap transaction: {e:?}"))
         .context("Failed to submit swap transaction")?;
 
-    println!("         TX ID: {:?}", tx_id);
+    // Print Bob's balance AFTER transaction
+    println!("   💰 Bob's balance AFTER transaction:");
+    if let Ok(Some(bob_account_after)) = client.get_account(bob_id).await {
+        for asset in bob_account_after.account().vault().assets() {
+            if let miden_objects::asset::Asset::Fungible(fa) = asset {
+                println!(
+                    "      - Faucet {}: {}",
+                    fa.faucet_id().to_hex(),
+                    fa.amount()
+                );
+            }
+        }
+    }
+
+    client.sync_state().await?;
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
 
     Ok(p2id_note)
 }
