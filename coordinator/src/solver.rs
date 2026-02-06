@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use integration::helpers::compute_p2id_tag_for_local_account;
 use miden_client::{
     keystore::FilesystemKeyStore,
     note::{Note, NoteAssets as ClientNoteAssets, NoteExecutionHint, NoteMetadata, NoteTag},
@@ -120,14 +119,22 @@ async fn execute_swap(
     let p2id_note = Note::new(p2id_note_assets, p2id_note_metadata, p2id_recipient.clone());
     let p2id_note_details = NoteDetails::from(&p2id_note);
     let expected_future_notes = vec![(p2id_note_details, p2id_tag)];
+    println!(
+        "Expected future notes: {:?}",
+        p2id_note.script().root().to_hex()
+    );
 
     // Build and submit transaction
+    // Using unauthenticated_input_notes since swap notes are public and can be consumed by anyone
     let consume_request = TransactionRequestBuilder::new()
-        .authenticated_input_notes([(note.id(), Some(note_args))])
+        .unauthenticated_input_notes([(note.clone(), Some(note_args))])
         .expected_future_notes(expected_future_notes)
         .expected_output_recipients(vec![p2id_recipient])
         .build()
         .context("Failed to build swap transaction")?;
+
+    // Note: For unauthenticated notes, we don't need to import the note separately
+    // The note is provided directly in unauthenticated_input_notes
 
     let tx_id = client
         .submit_new_transaction(bob_id, consume_request)

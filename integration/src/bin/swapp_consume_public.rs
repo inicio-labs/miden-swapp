@@ -291,9 +291,47 @@ async fn main() -> Result<()> {
     // IMPORTANT: Wait for transaction to be included in a block before proceeding
     // This ensures the transaction is fully processed and the database state is consistent
     // Wait a bit for transaction to be submitted
+    println!("\nWaiting for transaction to be processed...");
     tokio::time::sleep(Duration::from_secs(60)).await;
     client.sync_state().await?;
     println!("Full fill completed\n");
+
+    //------------------------------------------------------------
+    // STEP 8: Alice directly consumes the P2ID note (25 ETH)
+    //------------------------------------------------------------
+    println!("[STEP 8] Alice directly consuming the expected P2ID note (25 ETH)");
+
+    println!("\nExpected P2ID Note ID: {:?}", p2id_note.id().to_hex());
+    println!("Attempting to consume it directly...");
+
+    // Try to consume the P2ID note directly using its ID
+    // The note should be on-chain if everything worked correctly
+    let alice_consume_tx = TransactionRequestBuilder::new()
+        .unauthenticated_input_notes([(p2id_note.clone(), None)])
+        .build()
+        .context("Failed to build Alice's consume transaction")?;
+
+    match client
+        .submit_new_transaction(alice_id, alice_consume_tx)
+        .await
+    {
+        Ok(alice_tx_id) => {
+            println!(
+                "✅ SUCCESS! Alice consumed the P2ID note. TX: {:?}",
+                alice_tx_id
+            );
+            println!("This confirms the output note WAS sent to chain!");
+
+            // Wait and sync
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            client.sync_state().await?;
+        }
+        Err(e) => {
+            println!("❌ FAILED! Alice could not consume the P2ID note");
+            println!("Error: {:?}", e);
+            println!("This indicates the output note was NOT sent to chain!");
+        }
+    }
 
     println!("\n=== Test Complete ===");
 
