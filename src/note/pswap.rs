@@ -1156,9 +1156,7 @@ mod tests {
 
     #[test]
     fn test_p2id_recipient_targets_creator_not_consumer() {
-        // Validates fix #1: build_p2id_recipient uses creator (Alice), not consumer (Bob).
-        // The integration test (swapp_test.rs:212) does:
-        //   build_p2id_recipient(alice.id(), serial_num)
+        // Validates that build_p2id_recipient uses creator (Alice), not consumer (Bob).
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1192,9 +1190,7 @@ mod tests {
 
     #[test]
     fn test_aux_word_layout_matches_contract() {
-        // Validates fix #2: aux word is [fill_amount, 0, 0, 0].
-        // The integration test (swapp_test.rs:232) does:
-        //   Word::from([aux, Felt::ZERO, Felt::ZERO, Felt::ZERO])
+        // Validates that aux word layout is [fill_amount, 0, 0, 0].
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1238,9 +1234,7 @@ mod tests {
 
     #[test]
     fn test_remainder_note_sender_is_consumer() {
-        // Validates fix #3: remainder note sender is consumer (Bob), not creator (Alice).
-        // The integration test (swapp_test.rs:795-796) does:
-        //   NoteMetadata::new(bob.id(), ...)
+        // Validates that remainder note sender is consumer (Bob), not creator (Alice).
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1260,10 +1254,8 @@ mod tests {
 
     #[test]
     fn test_remainder_note_attachment_has_offered_out() {
-        // Validates fix #4: remainder attachment is [offered_out, 0, 0, 0],
+        // Validates that remainder attachment is [offered_out, 0, 0, 0],
         // not a copy of the original swap note's attachment.
-        // The integration test (swapp_test.rs:793-794) does:
-        //   Word::from([Felt::new(offered_out), Felt::ZERO, Felt::ZERO, Felt::ZERO])
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1377,7 +1369,7 @@ mod tests {
     #[test]
     fn test_remainder_serial_num_is_hash_of_original() {
         // Validates that the remainder serial number is derived by hashing
-        // the original serial number (matching swapp_test.rs:751-753).
+        // the original serial number.
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1784,112 +1776,5 @@ mod tests {
         println!("  - Both output notes built via PswapNote::create_swap_output_notes");
 
         Ok(())
-    }
-
-    /// Felt-based reimplementation of calculate_output_amount (mirrors on-chain logic).
-    fn felt_calculate_output_amount(
-        offered_total: Felt,
-        requested_total: Felt,
-        input_amount: Felt,
-    ) -> Felt {
-        let PRECISION_FACTOR = Felt::new(100_000);
-
-        println!("Felt Flow");
-        if offered_total.as_int() > requested_total.as_int() {
-            let ratio = (offered_total * PRECISION_FACTOR) / requested_total;
-            println!("ratio: {}", ratio);
-            let output = (input_amount * ratio) / PRECISION_FACTOR;
-            println!("output: {}", output);
-            output
-        } else {
-            let ratio = (requested_total * PRECISION_FACTOR) / offered_total;
-            println!("ratio: {}", ratio);
-            let output = (input_amount * PRECISION_FACTOR) / ratio;
-            println!("output: {}", output);
-            output
-        }
-    }
-
-    pub fn u64_calculate_output_amount(
-        offered_total: u64,
-        requested_total: u64,
-        input_amount: u64,
-    ) -> u64 {
-        const PRECISION_FACTOR: u64 = 100_000;
-
-        println!("u64 Flow");
-        if offered_total > requested_total {
-            // Case 1: offered_total > requested_total
-            // Calculate ratio = (offered_total * factor) / requested_total
-            // Then output = (input_amount * ratio) / factor
-            let ratio = (offered_total * PRECISION_FACTOR) / requested_total;
-            println!("ratio: {}", ratio);
-            let output = (input_amount * ratio) / PRECISION_FACTOR;
-            println!("output: {}", output);
-            output
-        } else {
-            // Case 2: offered_total <= requested_total
-            // Direct calculation with precision
-            let ratio = (requested_total * PRECISION_FACTOR) / offered_total;
-            println!("ratio: {}", ratio);
-            let output = (input_amount * PRECISION_FACTOR) / ratio;
-            println!("output: {}", output);
-            output
-        }
-    }
-
-    /// Simple xorshift64 PRNG for deterministic fuzz testing without external deps.
-    struct Xorshift64(u64);
-
-    impl Xorshift64 {
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        /// Generate a random u64 in [1, max] (avoids zero for division safety).
-        fn next_range(&mut self, max: u64) -> u64 {
-            (self.next() % max).saturating_add(1)
-        }
-    }
-
-    #[test]
-    fn test_calculate_output_amount_felt_vs_u64() {
-        let mut mismatches = 0u64;
-        let mut total = 0u64;
-
-        // --- Edge cases ---
-        let edge_cases: Vec<(u64, u64, u64)> = vec![(10, 3, 2)];
-
-        // Test edge cases
-        for (offered, requested, input) in &edge_cases {
-            total += 1;
-            println!(
-                "Edge case: offered={}, requested={}, input={}",
-                offered, requested, input
-            );
-            let rust_result = u64_calculate_output_amount(*offered, *requested, *input);
-            let felt_result = felt_calculate_output_amount(
-                Felt::new(*offered),
-                Felt::new(*requested),
-                Felt::new(*input),
-            );
-            let felt_as_u64 = felt_result.as_int();
-
-            assert_eq!(
-                rust_result, felt_as_u64,
-                "MISMATCH: offered={}, requested={}, input={} => u64={}, felt={}",
-                offered, requested, input, rust_result, felt_as_u64
-            );
-        }
-
-        println!(
-            "\nEdge cases: {}/{} matched ({} mismatches)",
-            total - mismatches,
-            total,
-            mismatches
-        );
     }
 }

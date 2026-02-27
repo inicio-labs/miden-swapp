@@ -237,8 +237,6 @@ async fn main() -> Result<()> {
             println!("  Amount: {}", fa.amount());
         }
     }
-    // Print NoteDetails structure
-
     // Build consume transaction using input_notes with note args
     // Bob is consuming the swap note and providing the input amount
     // In v0.13, we use input_notes which accepts full Note objects

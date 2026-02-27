@@ -1,11 +1,9 @@
-use anyhow::Ok;
 use integration::helpers::{
     build_project_in_dir, create_testing_account_from_package, create_testing_note_from_package,
     AccountCreationConfig, NoteCreationConfig,
 };
 
 use miden_client::{
-    account::AccountBuilder,
     note::{
         Note, NoteAssets, NoteExecutionHint, NoteInputs, NoteMetadata, NoteRecipient, NoteScript,
         NoteTag, NoteType,
@@ -15,19 +13,16 @@ use miden_client::{
 };
 use miden_core::{crypto::hash::Rpo256, FieldElement};
 use miden_protocol::{
-    account::AccountType,
-    account::{AccountId, AccountStorageMode},
+    account::AccountId,
     asset::{Asset, FungibleAsset},
     note::{NoteAttachment, NoteAttachmentScheme},
     transaction::TransactionScript,
 };
-use miden_standards::account::auth::NoAuth;
 use miden_standards::note::utils::build_p2id_recipient;
 use miden_testing::{Auth, MockChain};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-// Import PswapNote from the workspace
-use miden_swapp::{BasicWallet, PswapNote};
+use miden_swapp::PswapNote;
 
 /// Compute the P2ID tag for a local account
 fn compute_p2id_tag_for_local_account(account_id: AccountId) -> NoteTag {
@@ -43,19 +38,6 @@ fn compute_p2id_tag_felt(account_id: AccountId) -> Felt {
     Felt::new(u32::from(p2id_tag) as u64)
 }
 
-/// Helper function to create a SWAPP note using PswapNote from the workspace
-///
-/// # Example Usage:
-/// ```ignore
-/// let swap_note = create_swapp_note_with_pswap(
-///     creator_account_id,
-///     offered_asset,   // e.g., 50 USDT
-///     requested_asset, // e.g., 25 ETH
-///     NoteType::Public,
-///     &mut rng,
-/// )?;
-/// ```
-#[allow(dead_code)]
 fn create_swapp_note_with_pswap<R: miden_protocol::crypto::rand::FeltRng>(
     creator_account_id: AccountId,
     offered_asset: Asset,
@@ -605,7 +587,7 @@ async fn swapp_note_private_full_fill_test() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
-    println!("=== Test: Full Fill Swap ===");
+    println!("=== Test: Partial Fill Swap ===");
     let mut builder = MockChain::builder();
 
     // STEP 1: Create faucets in genesis
@@ -614,7 +596,7 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
         Auth::BasicAuth,
         "USDC",
         1000,      // max_supply
-        Some(150), // total_issuance (50 for note + 100 for Bob)
+        Some(150), // total_issuance (10 for note + 100 for Bob)
     )?;
     println!("USDC Faucet: {:?}", usdc_faucet.id());
     println!("  Version: {:?}", usdc_faucet.id().version());
@@ -623,7 +605,7 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
         Auth::BasicAuth,
         "ETH",
         1000,     // max_supply
-        Some(50), // total_issuance (25 for Alice's request)
+        Some(50), // total_issuance (3 for Alice's request)
     )?;
     println!("ETH Faucet: {:?}", eth_faucet.id());
     println!("  Version: {:?}", eth_faucet.id().version());
@@ -632,9 +614,9 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
     println!("\nCreating Alice and Bob wallets with initial assets...");
     let alice = builder.add_existing_wallet_with_assets(
         Auth::BasicAuth,
-        [FungibleAsset::new(usdc_faucet.id(), 50)?.into()], // Alice has 50 USDC to offer
+        [FungibleAsset::new(usdc_faucet.id(), 10)?.into()], // Alice has 10 USDC to offer
     )?;
-    println!("Alice: {:?} (has 50 USDC)", alice.id());
+    println!("Alice: {:?} (has 10 USDC)", alice.id());
     println!("  Version: {:?}", alice.id().version());
 
     // Build basic-wallet contract package
@@ -651,11 +633,11 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    let assets = vec![FungibleAsset::new(eth_faucet.id(), 25)?.into()];
+    let assets = vec![FungibleAsset::new(eth_faucet.id(), 3)?.into()]; // Bob has 3 ETH to provide
 
     let bob = create_testing_account_from_package(account_package.clone(), bob_account_cfg, assets)
         .await?;
-    println!("Bob account created: {:?}", bob.id());
+    println!("Bob account created: {:?} (has 3 ETH)", bob.id());
 
     let _bob_account = builder.add_account(bob.clone());
 
@@ -668,13 +650,13 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
     println!("Swapp note contract built successfully.");
 
     // STEP 4: Create swap note with proper structure
-    println!("\nCreating swap note (Alice offers 50 USDC for 25 ETH)...");
+    println!("\nCreating swap note (Alice offers 10 USDC for 3 ETH)...");
 
     // Compute proper P2ID tag for Alice (who will receive the output note)
     let p2id_tag_felt = compute_p2id_tag_felt(alice.id());
 
     let note_inputs = vec![
-        // Requested Asset (positions 0-3): 25 ETH
+        // Requested Asset (positions 0-3): 3 ETH
         eth_faucet.id().prefix().into(),
         eth_faucet.id().suffix(),
         Felt::ZERO,
@@ -687,7 +669,7 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
         p2id_tag_felt,
     ];
 
-    // Add the offered asset (50 USDC) to the note
+    // Add the offered asset (10 USDC) to the note
     let offered_asset = FungibleAsset::new(usdc_faucet.id(), 10)?;
     let mut note_assets = NoteAssets::default();
     note_assets.add_asset(offered_asset.into())?;
@@ -710,20 +692,20 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
     println!("\nBuilding MockChain...");
     let mock_chain = builder.build()?;
 
-    println!("\nBob consuming swap note (providing 15 ETH - partial fill)...");
+    println!("\nBob consuming swap note (providing 1 ETH - partial fill)...");
     let note_args = Word::from([
-        Felt::ZERO, // input_amount = 15 (partial fill, 60% of requested)
+        Felt::ZERO, // input_amount = 1 (partial fill, 33% of requested)
         Felt::ZERO,
         Felt::ZERO,
-        Felt::new(2),
+        Felt::new(1),
     ]);
 
     let mut note_args_map = BTreeMap::new();
     note_args_map.insert(swap_note.id(), note_args);
 
     // Create the expected P2ID note that will be created by the swap script
-    // This note will contain 15 ETH (input_amount) and be sent to Alice
-    println!("\nCreating expected P2ID note for Alice (15 ETH)...");
+    // This note will contain 1 ETH (input_amount) and be sent to Alice
+    println!("\nCreating expected P2ID note for Alice (1 ETH)...");
 
     let p2id_serial_num = Word::from([
         swap_note.recipient().serial_num()[0] + Felt::new(1),
@@ -735,12 +717,12 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
     let p2id_recipient = build_p2id_recipient(alice.id(), p2id_serial_num)?;
 
     let p2id_tag = compute_p2id_tag_for_local_account(alice.id());
-    let p2id_aux = Felt::new(2); // input_amount = 15 ETH
+    let p2id_aux = Felt::new(1); // input_amount = 1 ETH
 
-    let p2id_asset = FungibleAsset::new(eth_faucet.id(), 2)?; // 15 ETH
+    let p2id_asset = FungibleAsset::new(eth_faucet.id(), 1)?; // 1 ETH
     let p2id_note_assets = NoteAssets::new(vec![p2id_asset.into()])?;
 
-    // Attach aux value (15) to the metadata
+    // Attach aux value (1) to the metadata
     let aux_word = Word::from([p2id_aux, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     let attachment = NoteAttachment::new_word(NoteAttachmentScheme::none(), aux_word);
     let p2id_note_metadata =
@@ -748,8 +730,8 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
 
     let p2id_note = Note::new(p2id_note_assets, p2id_note_metadata, p2id_recipient);
 
-    // Create the expected remainder swap note (contains 20 USDC, requests 10 ETH)
-    println!("\nCreating expected remainder swap note (20 USDC for 10 ETH)...");
+    // Create the expected remainder swap note (contains 7 USDC, requests 2 ETH)
+    println!("\nCreating expected remainder swap note (7 USDC for 2 ETH)...");
 
     let current_note_serial = swap_note.recipient().serial_num();
     let serial_num_word = current_note_serial;
@@ -760,13 +742,13 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
     let remainder_serial_num = Word::from(remainder_serial_num);
     println!("Remainder serial num: {:?}", remainder_serial_num);
 
-    // Note inputs for remainder swap note: requesting 10 ETH, creator is Alice
+    // Note inputs for remainder swap note: requesting 2 ETH, creator is Alice
     let remainder_note_inputs = vec![
-        // Requested Asset (positions 0-3): 10 ETH (remaining)
+        // Requested Asset (positions 0-3): 2 ETH (remaining)
         eth_faucet.id().prefix().into(),
         eth_faucet.id().suffix(),
         Felt::ZERO,
-        Felt::new(1), // requested_asset_total (25 - 15 = 10)
+        Felt::new(2), // requested_asset_total (3 - 1 = 2)
         // Note Creator (positions 4-7): Alice
         alice.id().prefix().into(),
         alice.id().suffix(),
@@ -789,21 +771,21 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
 
     // Create metadata for remainder note with aux attachment
     let remainder_tag = swap_note.metadata().tag();
-    let remainder_aux = Felt::new(4); // offered_out = (50 * 15) / 25 = 30
+    let remainder_aux = Felt::new(3); // offered_out = (10 * 1) / 3 = 3
 
     println!(
         "Remainder recipient: {:?}",
         remainder_recipient.digest().to_hex()
     );
 
-    // Attach aux value (30) to the remainder note
+    // Attach aux value (3) to the remainder note
     let aux_word = Word::from([remainder_aux, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
     let attachment = NoteAttachment::new_word(NoteAttachmentScheme::none(), aux_word);
     let remainder_note_metadata =
         NoteMetadata::new(bob.id(), NoteType::Public, remainder_tag).with_attachment(attachment);
 
-    // Create assets for remainder note: 20 USDC (50 - 30 = 20)
-    let remainder_asset = FungibleAsset::new(usdc_faucet.id(), 4)?;
+    // Create assets for remainder note: 7 USDC (10 - 3 = 7)
+    let remainder_asset = FungibleAsset::new(usdc_faucet.id(), 7)?;
     let remainder_note_assets = NoteAssets::new(vec![remainder_asset.into()])?;
 
     let remainder_note = Note::new(
@@ -857,19 +839,14 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
 
             if fungible.faucet_id() == eth_faucet.id() {
                 // This is the P2ID note (contains ETH)
-                assert_eq!(fungible.amount(), 15, "P2ID note should contain 15 ETH");
-                println!("✓ P2ID note verified: 15 ETH for Alice");
+                assert_eq!(fungible.amount(), 1, "P2ID note should contain 1 ETH");
+                println!("✓ P2ID note verified: 1 ETH for Alice");
                 p2id_note_found = true;
             } else if fungible.faucet_id() == usdc_faucet.id() {
                 // This is the remainder swap note (contains remaining USDC)
-                // Expected: (50 * 10) / 25 = 20 USDC remaining (since 15/25 = 60% filled, 40% remains)
-                // Actually: offered_out = (50 * 15) / 25 = 30, so remaining = 50 - 30 = 20
-                assert_eq!(
-                    fungible.amount(),
-                    20,
-                    "Remainder note should contain 20 USDC"
-                );
-                println!("✓ Remainder note verified: 20 USDC (still requesting 10 ETH)");
+                // Expected: offered_out = (10 * 1) / 3 = 3, so remaining = 10 - 3 = 7
+                assert_eq!(fungible.amount(), 7, "Remainder note should contain 7 USDC");
+                println!("✓ Remainder note verified: 7 USDC (still requesting 2 ETH)");
                 remainder_note_found = true;
             }
         }
@@ -888,14 +865,14 @@ async fn swapp_note_partial_fill_test() -> anyhow::Result<()> {
         Asset::Fungible(f) => f,
         _ => panic!("Expected fungible USDC asset"),
     };
-    assert_eq!(usdc_received.amount(), 6, "Bob should receive 30 USDC");
-    println!("✓ Bob's vault delta verified: +30 USDC, -15 ETH");
+    assert_eq!(usdc_received.amount(), 3, "Bob should receive 3 USDC");
+    println!("✓ Bob's vault delta verified: +3 USDC, -1 ETH");
 
     println!("\n✅ Partial-fill swap test passed!");
-    println!("  - Bob provided 15 ETH (60% of requested 25)");
-    println!("  - Bob received 30 USDC (60% of offered 50)");
-    println!("  - P2ID note created for Alice with 15 ETH");
-    println!("  - Remainder swap note created: 20 USDC for 10 ETH");
+    println!("  - Bob provided 1 ETH (33% of requested 3)");
+    println!("  - Bob received 3 USDC (33% of offered 10)");
+    println!("  - P2ID note created for Alice with 1 ETH");
+    println!("  - Remainder swap note created: 7 USDC for 2 ETH");
 
     Ok(())
 }
@@ -2618,8 +2595,8 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
         (40, 20, 10, 5, 2),    // 2:1 / 2:1, spread=6
         (14, 7, 10, 5, 3),     // 2:1 / 2:1, spread=9
         // Mixed ratios
-        (90, 45, 80, 40, 20),    // 2:1 / 2:1, spread=60
-        (30, 15, 24, 8, 4),      // 2:1 / 3:1, spread=20
+        (90, 45, 80, 40, 20), // 2:1 / 2:1, spread=60
+        (30, 15, 24, 8, 4),   // 2:1 / 3:1, spread=20
         (200, 100, 150, 50, 25), // 2:1 / 3:1, spread=125
         // Alice's offered <= requested (ratio 1:2 on Alice side)
         (10, 20, 30, 10, 4), // 1:2 / 3:1, spread=2

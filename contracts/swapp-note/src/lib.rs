@@ -35,13 +35,16 @@ fn calculate_output_amount(offered_total: Felt, requested_total: Felt, input_amo
         // Case 1: offered_total > requested_total
         // Calculate ratio = (offered_total * factor) / requested_total
         // Then output = (input_amount * ratio) / factor
-        let ratio = (offered_total * precision_factor) / requested_total;
-        return (input_amount * ratio) / precision_factor;
+        let ratio = (offered_total.as_u64() * precision_factor.as_u64()) / requested_total.as_u64();
+        let output = (input_amount.as_u64() * ratio) / precision_factor.as_u64();
+        return Felt::from_u32(output as u32);
     } else {
         // Case 2: offered_total <= requested_total
-        // Direct calculation: (input_amount * offered_total * factor) / (requested_total * factor)
-        let ratio = (requested_total * precision_factor) / offered_total;
-        return (input_amount * precision_factor) / ratio;
+        // Calculate ratio = (requested_total * factor) / offered_total
+        // Then output = (input_amount * factor) / ratio
+        let ratio = (requested_total.as_u64() * precision_factor.as_u64()) / offered_total.as_u64();
+        let output = (input_amount.as_u64() * precision_factor.as_u64()) / ratio;
+        return Felt::from_u32(output as u32);
     }
 }
 
@@ -91,9 +94,6 @@ fn create_p2id_note(
 }
 /// Create a Swapp note with remainder parameters
 fn create_swapp_note(serial_num: Word, aux: Felt, offered_asset: &Asset, padded_inputs: Vec<Felt>) {
-    // Create a tag for the P2ID note - LocalAny with payload 0
-    // This equals NoteTag::LocalAny(0) in the SDK, which serializes to 0xC0000000
-    //let tag = Tag::from(Felt::from_u32(0xC0000000));
     let tag = get_note_tag();
 
     let inputs = active_note::get_inputs();
@@ -185,28 +185,9 @@ impl SwappNote {
         let inflight_amount = arg[1];
         let total_input_amount = input_amount + inflight_amount;
 
-        // Validate input: input_amount must not exceed requested_asset_total
-        let is_valid = if total_input_amount <= requested_asset_total {
-            felt!(1)
-        } else {
-            felt!(0)
-        };
-
-        assert_eq(is_valid, felt!(1));
-
-        assert_eq(offered_asset_total, felt!(10));
-        assert_eq(requested_asset_total, felt!(3));
-        assert_eq(input_amount, felt!(2));
-        // assert_eq(felt!(1), felt!(0));
-
         // Compute offered output amount proportional to input
         let input_offered_out =
             calculate_output_amount(offered_asset_total, requested_asset_total, input_amount);
-
-        assert_eq(
-            input_offered_out,
-            Felt::from_u64_unchecked(6148914689804861447),
-        );
 
         let inflight_offered_out =
             calculate_output_amount(offered_asset_total, requested_asset_total, inflight_amount);
@@ -271,13 +252,6 @@ impl SwappNote {
             ]));
             let remainder_offered_asset =
                 Asset::new(remainder_offered_asset_reversed.inner.reverse());
-
-            // let remainder_offered_asset = Asset::new(Word::from([
-            //     remainder_offered_asset_total,
-            //     offered_asset.inner[2],
-            //     offered_asset.inner[1],
-            //     offered_asset.inner[0],
-            // ]));
 
             let swapp_note_creator_id = AccountId::new(inputs[4], inputs[5]);
 

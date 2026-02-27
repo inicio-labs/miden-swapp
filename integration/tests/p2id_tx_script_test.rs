@@ -8,7 +8,6 @@ use miden_client::{
     Felt, Word,
 };
 use miden_core::{crypto::hash::Rpo256, FieldElement};
-use miden_processor::AdviceInputs;
 use miden_protocol::{
     account::AccountId,
     asset::{Asset, FungibleAsset},
@@ -132,7 +131,7 @@ async fn p2id_tx_script_test() -> anyhow::Result<()> {
     ];
 
     // STEP 8: Compute RPO hash of advice data (needed by adv_load_preimage)
-    let mut commitment_key: Word = Rpo256::hash_elements(&advice_stack);
+    let commitment_key: Word = Rpo256::hash_elements(&advice_stack);
 
     let mut commitment = commitment_key.clone();
     commitment.reverse();

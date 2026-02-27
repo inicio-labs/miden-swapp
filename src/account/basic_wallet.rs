@@ -48,9 +48,10 @@ impl BasicWallet {
     ///
     /// # Arguments
     ///
-    /// * `account_id` - Seed bytes for the account builder
-    /// * `assets` - Initial assets to fund the account with
+    /// * `init_seed` - Seed bytes for the account builder
     /// * `storage_mode` - Account storage mode (e.g. `Public`)
+    /// * `auth_component` - Authentication component for the account
+    /// * `account_type` - Type of account to create
     pub fn create(
         init_seed: [u8; 32],
         storage_mode: AccountStorageMode,

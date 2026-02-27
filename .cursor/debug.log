@@ -1,5 +1,0 @@
-{"id":"log_1770632350173_H1","timestamp":1770632350173,"location":"build.rs:check_features","message":"cargo feature std presence","data":{"cargo_feature_std":false},"runId":"pre-fix","hypothesisId":"H1"}
-{"id":"log_1770632350174_H2","timestamp":1770632350174,"location":"build.rs:read_lib_rs","message":"checked lib.rs for no_std","data":{"lib_rs_exists":true,"has_no_std":true},"runId":"pre-fix","hypothesisId":"H2"}
-{"id":"log_1770632350174_H3","timestamp":1770632350174,"location":"build.rs:read_cargo_toml","message":"scanned Cargo.toml for miden deps","data":{"cargo_toml_exists":true,"mentions_miden":true,"mentions_miden_core":false},"runId":"pre-fix","hypothesisId":"H3"}
-{"id":"log_1770632350174_H4","timestamp":1770632350174,"location":"build.rs:env","message":"target and rustflags","data":{"target":"aarch64-apple-darwin","rustflags_present":false},"runId":"pre-fix","hypothesisId":"H4"}
-{"id":"log_1770632350174_INFO","timestamp":1770632350174,"location":"build.rs:main","message":"build-time instrumentation written","data":{},"runId":"pre-fix","hypothesisId":"INFO"}

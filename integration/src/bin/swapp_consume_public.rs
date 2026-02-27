@@ -68,9 +68,9 @@ async fn main() -> Result<()> {
     //------------------------------------------------------------
     // SCENARIO: Alice creates swap note, Bob fully fills
     //------------------------------------------------------------
-    println!("[TEST] Alice creates swap note (Offer 50 USDT for 25 ETH)");
+    println!("[TEST] Alice creates swap note (Offer 50 USDT for 20 ETH)");
 
-    // Alice creates a swap note: Offer 50 USDT for 25 ETH
+    // Alice creates a swap note: Offer 50 USDT for 20 ETH
     let offered_amount = 50u64;
     let requested_amount = 20u64;
 
