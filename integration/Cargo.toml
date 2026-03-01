@@ -27,6 +27,6 @@ name = "swapp_test"
 path = "tests/swapp_test.rs"
 
 [[test]]
-name = "p2id_tx_script_test"
-path = "tests/p2id_tx_script_test.rs"
+name = "consume_asset_script_test"
+path = "tests/consume_asset_script_test.rs"
 

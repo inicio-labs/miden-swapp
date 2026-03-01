@@ -9,4 +9,4 @@ pub mod tx;
 
 pub use account::BasicWallet;
 pub use note::PswapNote;
-pub use tx::InflightP2idScript;
+pub use tx::ConsumeAssetScript;

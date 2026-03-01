@@ -1,2 +1,2 @@
-mod inflight_p2id_script;
-pub use inflight_p2id_script::InflightP2idScript;
+mod consume_asset_script;
+pub use consume_asset_script::ConsumeAssetScript;

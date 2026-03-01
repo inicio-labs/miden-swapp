@@ -19,18 +19,18 @@ use miden_protocol::{
     note::NoteDetails,
 };
 use miden_standards::account::auth::AuthFalcon512Rpo;
-use miden_swapp::{InflightP2idScript, PswapNote};
+use miden_swapp::{ConsumeAssetScript, PswapNote};
 use rand::RngCore;
 use tokio::time::Duration;
 
-/// Public Spread Test (using miden_swapp::InflightP2idScript):
+/// Public Spread Test (using miden_swapp::ConsumeAssetScript):
 /// - Alice offers 25 USDT for 20 ETH
 /// - Bob offers 20 ETH for 20 USDT
-/// - Solver consumes both via InflightP2idScript, earns 5 USDT spread
+/// - Solver consumes both via ConsumeAssetScript, earns 5 USDT spread
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("=== Public Spread Test (InflightP2idScript) ===\n");
+    println!("=== Public Spread Test (ConsumeAssetScript) ===\n");
 
     // Load persisted state
     let state = SwappTestState::load()?;
@@ -149,9 +149,9 @@ async fn main() -> Result<()> {
     client.sync_state().await?;
 
     //------------------------------------------------------------
-    // Solver consumes both notes via InflightP2idScript
+    // Solver consumes both notes via ConsumeAssetScript
     //------------------------------------------------------------
-    println!("\n[3] Solver consuming both swap notes (with InflightP2idScript for spread)");
+    println!("\n[3] Solver consuming both swap notes (with ConsumeAssetScript for spread)");
 
     // Note args: arg[0]=input, arg[1]=inflight (swapp-note only reads these two)
     let alice_note_args = Word::from([
@@ -175,19 +175,14 @@ async fn main() -> Result<()> {
     let (bob_p2id_note, _) = PswapNote::create_output_notes(&bob_swap_note, solver_id, 0, 20)
         .map_err(|e| anyhow::anyhow!("Bob P2ID: {:?}", e))?;
 
-    // Use InflightP2idScript to get the tx script and prepare the solver's spread note
-    let tx_script = InflightP2idScript::tx_script();
+    // Use ConsumeAssetScript to get the tx script and prepare the solver's spread note
+    let tx_script = ConsumeAssetScript::tx_script();
 
     let solver_spread_asset = Asset::Fungible(FungibleAsset::new(faucet1_id, 5)?);
-    let data =
-        InflightP2idScript::prepare(solver_id, &[(solver_spread_asset, solver_id)], client.rng())
-            .map_err(|e| anyhow::anyhow!("InflightP2idScript::prepare failed: {:?}", e))?;
-
-    let solver_p2id_note = &data.expected_notes[0];
+    let data = ConsumeAssetScript::prepare(&[solver_spread_asset]);
 
     println!("Alice P2ID: {:?}", alice_p2id_note.id());
     println!("Bob P2ID: {:?}", bob_p2id_note.id());
-    println!("Solver P2ID: {:?}", solver_p2id_note.id());
 
     // Build expected future notes
     let expected_future_notes = vec![
@@ -199,13 +194,9 @@ async fn main() -> Result<()> {
             NoteDetails::from(&bob_p2id_note),
             bob_p2id_note.metadata().tag(),
         ),
-        (
-            NoteDetails::from(solver_p2id_note),
-            solver_p2id_note.metadata().tag(),
-        ),
     ];
 
-    // Submit consume transaction with InflightP2idScript
+    // Submit consume transaction with ConsumeAssetScript
     let consume_request = TransactionRequestBuilder::new()
         .input_notes(vec![
             (alice_swap_note.clone(), Some(alice_note_args)),
@@ -218,7 +209,6 @@ async fn main() -> Result<()> {
         .expected_output_recipients(vec![
             alice_p2id_note.recipient().clone(),
             bob_p2id_note.recipient().clone(),
-            solver_p2id_note.recipient().clone(),
         ])
         .build()
         .context("Failed to build consume transaction")?;
@@ -236,24 +226,9 @@ async fn main() -> Result<()> {
     //------------------------------------------------------------
     // Each party consumes their P2ID note
     //------------------------------------------------------------
-    println!("\n[4] Solver consuming P2ID (5 USDT spread)");
-    match client
-        .submit_new_transaction(
-            solver_id,
-            TransactionRequestBuilder::new()
-                .input_notes(vec![(solver_p2id_note.clone(), None)])
-                .build()?,
-        )
-        .await
-    {
-        Ok(id) => println!("SUCCESS TX: {:?}", id),
-        Err(e) => println!("FAILED: {:?}", e),
-    }
+    // Solver's spread (5 USDT) was consumed directly into vault during the swap tx
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    client.sync_state().await?;
-
-    println!("\n[5] Alice consuming P2ID (20 ETH)");
+    println!("\n[4] Alice consuming P2ID (20 ETH)");
     match client
         .submit_new_transaction(
             alice_id,
@@ -270,7 +245,7 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(5)).await;
     client.sync_state().await?;
 
-    println!("\n[6] Bob consuming P2ID (20 USDT)");
+    println!("\n[5] Bob consuming P2ID (20 USDT)");
     match client
         .submit_new_transaction(
             bob_id,
@@ -287,7 +262,7 @@ async fn main() -> Result<()> {
     println!("\n=== Test Complete ===");
     println!("Alice: 25 USDT -> 20 ETH");
     println!("Bob: 20 ETH -> 20 USDT");
-    println!("Solver: 5 USDT spread profit (via InflightP2idScript)");
+    println!("Solver: 5 USDT spread profit (via ConsumeAssetScript)");
 
     Ok(())
 }

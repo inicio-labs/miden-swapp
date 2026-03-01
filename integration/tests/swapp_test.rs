@@ -1594,16 +1594,16 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     )?);
     println!("Swapp note contract built successfully.");
 
-    // Build p2id-tx-script (creates Bob's spread P2ID note)
-    println!("\nBuilding p2id-tx-script...");
-    let p2id_script_package = Arc::new(build_project_in_dir(
-        Path::new("../contracts/p2id-tx-script"),
+    // Build consume-asset-script (creates Bob's spread P2ID note)
+    println!("\nBuilding consume-asset-script...");
+    let consume_asset_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/consume-asset-script"),
         true,
     )?);
-    let program = p2id_script_package.unwrap_program();
+    let program = consume_asset_package.unwrap_program();
     let tx_script =
         TransactionScript::from_parts(program.mast_forest().clone(), program.entrypoint());
-    println!("p2id-tx-script built successfully.");
+    println!("consume-asset-script built successfully.");
 
     // STEP 4: Create Alice's swap note (offers 30 ETH, wants 50 USDC)
     println!("\nCreating Alice's swap note (offers 30 ETH for 50 USDC)...");
@@ -1753,98 +1753,18 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
         charlie_p2id_recipient,
     );
 
-    // P2ID notes for Bob (5 ETH spread split into 2 ETH + 3 ETH)
-    println!("\nCreating expected P2ID notes for Bob (5 ETH spread = 2 ETH + 3 ETH)...");
-    let bob_p2id_tag = compute_p2id_tag_for_local_account(bob.id());
-    let bob_p2id_tag_felt = Felt::new(u32::from(bob_p2id_tag) as u64);
-    let note_type_felt: Felt = NoteType::Public.into();
-
-    // Spread note 1: 2 ETH to Bob
-    let bob_p2id_serial_num1 = Word::from([
-        alice_swap_note.recipient().serial_num()[0] + Felt::new(2),
-        alice_swap_note.recipient().serial_num()[1] + Felt::new(2),
-        alice_swap_note.recipient().serial_num()[2] + Felt::new(2),
-        alice_swap_note.recipient().serial_num()[3] + Felt::new(2),
-    ]);
-    let bob_p2id_aux1 = Felt::new(2);
-    let bob_p2id_asset1 = FungibleAsset::new(eth_faucet.id(), 2)?;
-    let bob_p2id_recipient1 = build_p2id_recipient(bob.id(), bob_p2id_serial_num1)?;
-    let bob_p2id_note_assets1 = NoteAssets::new(vec![bob_p2id_asset1.into()])?;
-    let aux_word1 = Word::from([bob_p2id_aux1, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    let attachment1 = NoteAttachment::new_word(NoteAttachmentScheme::none(), aux_word1);
-    let bob_p2id_note_metadata1 =
-        NoteMetadata::new(bob.id(), NoteType::Public, bob_p2id_tag).with_attachment(attachment1);
-    let bob_p2id_note1 = Note::new(
-        bob_p2id_note_assets1,
-        bob_p2id_note_metadata1,
-        bob_p2id_recipient1,
-    );
-
-    // Spread note 2: 3 ETH to Bob
-    let bob_p2id_serial_num2 = Word::from([
-        alice_swap_note.recipient().serial_num()[0] + Felt::new(3),
-        alice_swap_note.recipient().serial_num()[1] + Felt::new(3),
-        alice_swap_note.recipient().serial_num()[2] + Felt::new(3),
-        alice_swap_note.recipient().serial_num()[3] + Felt::new(3),
-    ]);
-    let bob_p2id_aux2 = Felt::new(3);
-    let bob_p2id_asset2 = FungibleAsset::new(eth_faucet.id(), 3)?;
-    let bob_p2id_recipient2 = build_p2id_recipient(bob.id(), bob_p2id_serial_num2)?;
-    let bob_p2id_note_assets2 = NoteAssets::new(vec![bob_p2id_asset2.into()])?;
-    let aux_word2 = Word::from([bob_p2id_aux2, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-    let attachment2 = NoteAttachment::new_word(NoteAttachmentScheme::none(), aux_word2);
-    let bob_p2id_note_metadata2 =
-        NoteMetadata::new(bob.id(), NoteType::Public, bob_p2id_tag).with_attachment(attachment2);
-    let bob_p2id_note2 = Note::new(
-        bob_p2id_note_assets2,
-        bob_p2id_note_metadata2,
-        bob_p2id_recipient2,
-    );
-
-    // Build advice stack for p2id-tx-script (2 spread notes: 2 ETH + 3 ETH)
+    // Build advice stack for consume-asset-script (2 spread notes: 2 ETH + 3 ETH)
     println!("\nBuilding advice stack for Bob's P2ID tx-script (2 notes)...");
     let bob_asset_word1 = Word::from(Asset::from(FungibleAsset::new(eth_faucet.id(), 2)?));
     let bob_asset_word2 = Word::from(Asset::from(FungibleAsset::new(eth_faucet.id(), 3)?));
 
     let advice_stack: Vec<Felt> = vec![
-        // --- Spread note 1: 2 ETH to Bob ---
-        // Word 0: serial_num
-        bob_p2id_serial_num1[0],
-        bob_p2id_serial_num1[1],
-        bob_p2id_serial_num1[2],
-        bob_p2id_serial_num1[3],
-        // Word 1: [recipient_prefix, recipient_suffix, tag, note_type]
-        bob.id().prefix().into(),
-        bob.id().suffix(),
-        bob_p2id_tag_felt,
-        note_type_felt,
-        // Word 2: [aux, 0, 0, 0]
-        bob_p2id_aux1,
-        Felt::ZERO,
-        Felt::ZERO,
-        Felt::ZERO,
-        // Word 3: asset_word
+        // asset 1
         bob_asset_word1[0],
         bob_asset_word1[1],
         bob_asset_word1[2],
         bob_asset_word1[3],
-        // --- Spread note 2: 3 ETH to Bob ---
-        // Word 0: serial_num
-        bob_p2id_serial_num2[0],
-        bob_p2id_serial_num2[1],
-        bob_p2id_serial_num2[2],
-        bob_p2id_serial_num2[3],
-        // Word 1: [recipient_prefix, recipient_suffix, tag, note_type]
-        bob.id().prefix().into(),
-        bob.id().suffix(),
-        bob_p2id_tag_felt,
-        note_type_felt,
-        // Word 2: [aux, 0, 0, 0]
-        bob_p2id_aux2,
-        Felt::ZERO,
-        Felt::ZERO,
-        Felt::ZERO,
-        // Word 3: asset_word
+        // asset 2
         bob_asset_word2[0],
         bob_asset_word2[1],
         bob_asset_word2[2],
@@ -1855,7 +1775,7 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     let mut commitment = commitment_key;
     commitment.reverse();
 
-    // Execute transaction with both notes + p2id-tx-script for Bob's spread (2 notes)
+    // Execute transaction with both notes + consume-asset-script for Bob's spread (2 notes)
     // 4 P2ID notes: Alice(50 USDC), Charlie(25 ETH), Bob(2 ETH), Bob(3 ETH)
     let tx_context = mock_chain
         .build_tx_context(
@@ -1869,8 +1789,6 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
         .extend_expected_output_notes(vec![
             OutputNote::Full(alice_p2id_note),
             OutputNote::Full(charlie_p2id_note),
-            OutputNote::Full(bob_p2id_note1),
-            OutputNote::Full(bob_p2id_note2),
         ])
         .extend_note_args(note_args_map)
         .build()?;
@@ -1886,20 +1804,18 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     // STEP 9: Verify results
     println!("\n=== Verification ===");
 
-    // Should have exactly 4 P2ID notes (Alice, Charlie, Bob×2 spread)
+    // Should have exactly 2 P2ID notes (Alice, Charlie) - Bob consumes spread directly
     let output_notes = executed_transaction.output_notes();
     println!("Output notes created: {}", output_notes.num_notes());
     assert_eq!(
         output_notes.num_notes(),
-        4,
-        "Expected exactly 4 P2ID notes (Alice 50 USDC, Charlie 25 ETH, Bob 2 ETH, Bob 3 ETH)"
+        2,
+        "Expected exactly 2 P2ID notes (Alice 50 USDC, Charlie 25 ETH)"
     );
 
-    // Verify the four P2ID notes
+    // Verify the two P2ID notes
     let mut alice_p2id_found = false;
     let mut charlie_p2id_found = false;
-    let mut bob_p2id_2eth_found = false;
-    let mut bob_p2id_3eth_found = false;
 
     for idx in 0..output_notes.num_notes() {
         let note = output_notes.get_note(idx);
@@ -1919,12 +1835,6 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
                 } else if f.faucet_id() == eth_faucet.id() && f.amount() == 25 {
                     println!("  -> Charlie's P2ID note verified: 25 ETH");
                     charlie_p2id_found = true;
-                } else if f.faucet_id() == eth_faucet.id() && f.amount() == 2 {
-                    println!("  -> Bob's P2ID note verified: 2 ETH (spread part 1)");
-                    bob_p2id_2eth_found = true;
-                } else if f.faucet_id() == eth_faucet.id() && f.amount() == 3 {
-                    println!("  -> Bob's P2ID note verified: 3 ETH (spread part 2)");
-                    bob_p2id_3eth_found = true;
                 }
             }
         }
@@ -1932,16 +1842,8 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
 
     assert!(alice_p2id_found, "Alice's P2ID note (50 USDC) not found");
     assert!(charlie_p2id_found, "Charlie's P2ID note (25 ETH) not found");
-    assert!(
-        bob_p2id_2eth_found,
-        "Bob's P2ID note (2 ETH spread) not found"
-    );
-    assert!(
-        bob_p2id_3eth_found,
-        "Bob's P2ID note (3 ETH spread) not found"
-    );
 
-    // Check Bob's vault delta - should be zero since the 5 ETH goes to a P2ID note
+    // Check Bob's vault delta - 5 ETH spread should be added directly to Bob's vault
     println!("\nVerifying Bob's vault delta...");
     let account_delta = executed_transaction.account_delta();
     let vault_delta = account_delta.vault();
@@ -1952,12 +1854,20 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     println!("  Assets removed: {}", removed_assets.len());
 
     assert_eq!(removed_assets.len(), 0, "Bob should not spend any assets");
+    assert_eq!(added_assets.len(), 1, "Bob should receive 1 asset (5 ETH spread)");
+    if let Asset::Fungible(f) = &added_assets[0] {
+        assert_eq!(f.faucet_id(), eth_faucet.id(), "Added asset should be ETH");
+        assert_eq!(f.amount(), 5, "Bob should receive 5 ETH spread");
+        println!("  -> Bob's vault verified: +5 ETH");
+    } else {
+        panic!("Expected fungible asset in Bob's vault");
+    }
 
     println!("\n=== Inflight cross-swap with spread test passed! ===");
     println!("  - Alice offered 30 ETH for 50 USDC (fully filled)");
     println!("  - Charlie offered 50 USDC for 25 ETH (fully filled)");
-    println!("  - Bob earned 5 ETH spread split into 2 P2ID notes (2 ETH + 3 ETH)");
-    println!("  - 4 P2ID notes: Alice(50 USDC), Charlie(25 ETH), Bob(2 ETH), Bob(3 ETH)");
+    println!("  - Bob earned 5 ETH spread directly into vault");
+    println!("  - 2 P2ID notes: Alice(50 USDC), Charlie(25 ETH)");
 
     Ok(())
 }
@@ -2215,8 +2125,8 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
         Path::new("../contracts/basic-wallet"),
         true,
     )?);
-    let p2id_script_package = Arc::new(build_project_in_dir(
-        Path::new("../contracts/p2id-tx-script"),
+    let consume_asset_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/consume-asset-script"),
         true,
     )?);
     println!("Contracts built.\n");
@@ -2351,7 +2261,7 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
         builder.add_output_note(OutputNote::Full(charlie_swap_note.clone()));
 
         // Build tx_script from shared package
-        let program = p2id_script_package.unwrap_program();
+        let program = consume_asset_package.unwrap_program();
         let tx_script =
             TransactionScript::from_parts(program.mast_forest().clone(), program.entrypoint());
 
@@ -2382,46 +2292,9 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
             i + 1
         );
 
-        // Bob's spread P2ID note
-        let bob_p2id_tag = compute_p2id_tag_for_local_account(bob.id());
-        let bob_p2id_tag_felt = Felt::new(u32::from(bob_p2id_tag) as u64);
-        let note_type_felt: Felt = NoteType::Public.into();
-
-        let bob_serial = Word::from([
-            alice_swap_note.recipient().serial_num()[0] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[1] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[2] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[3] + Felt::new(2),
-        ]);
-        let bob_aux = Felt::new(spread);
-        let bob_asset = FungibleAsset::new(eth_faucet.id(), spread)?;
-        let bob_recipient = build_p2id_recipient(bob.id(), bob_serial)?;
-        let bob_note_assets = NoteAssets::new(vec![bob_asset.into()])?;
-        let bob_aux_word = Word::from([bob_aux, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let bob_attachment = NoteAttachment::new_word(NoteAttachmentScheme::none(), bob_aux_word);
-        let bob_meta = NoteMetadata::new(bob.id(), NoteType::Public, bob_p2id_tag)
-            .with_attachment(bob_attachment);
-        let bob_p2id_note = Note::new(bob_note_assets, bob_meta, bob_recipient);
-
-        // Advice stack for p2id-tx-script (1 spread note)
+        // Advice stack for spread (assets consumed directly into Bob's vault)
         let bob_asset_word = Word::from(Asset::from(FungibleAsset::new(eth_faucet.id(), spread)?));
         let advice_stack: Vec<Felt> = vec![
-            // Word 0: serial_num
-            bob_serial[0],
-            bob_serial[1],
-            bob_serial[2],
-            bob_serial[3],
-            // Word 1: [recipient_prefix, recipient_suffix, tag, note_type]
-            bob.id().prefix().into(),
-            bob.id().suffix(),
-            bob_p2id_tag_felt,
-            note_type_felt,
-            // Word 2: [aux, 0, 0, 0]
-            bob_aux,
-            Felt::ZERO,
-            Felt::ZERO,
-            Felt::ZERO,
-            // Word 3: asset_word
             bob_asset_word[0],
             bob_asset_word[1],
             bob_asset_word[2],
@@ -2441,12 +2314,6 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
                 *charlie_eth,
                 "Charlie P2ID",
             ),
-            (
-                bob_p2id_note.id(),
-                eth_faucet.id(),
-                spread,
-                "Bob spread P2ID",
-            ),
         ];
 
         // Execute transaction
@@ -2462,7 +2329,6 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
             .extend_expected_output_notes(vec![
                 OutputNote::Full(alice_p2id_note),
                 OutputNote::Full(charlie_p2id_note),
-                OutputNote::Full(bob_p2id_note),
             ])
             .extend_note_args(note_args_map)
             .build()?;
@@ -2473,8 +2339,8 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
         let output_notes = executed_tx.output_notes();
         assert_eq!(
             output_notes.num_notes(),
-            3,
-            "Case {}: Expected 3 P2ID notes, got {}",
+            2,
+            "Case {}: Expected 2 P2ID notes, got {}",
             i + 1,
             output_notes.num_notes()
         );
@@ -2520,7 +2386,7 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
             assert!(found, "Case {}: {} note not found in output", i + 1, label);
         }
 
-        // Bob's vault should be empty (spread goes to P2ID note)
+        // Bob's vault should have the spread added directly
         let vault_delta = executed_tx.account_delta().vault();
         assert_eq!(
             vault_delta.removed_assets().count(),
@@ -2528,9 +2394,23 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
             "Case {}: Bob should not spend any assets",
             i + 1
         );
+        let added_assets: Vec<Asset> = vault_delta.added_assets().collect();
+        assert_eq!(
+            added_assets.len(),
+            1,
+            "Case {}: Bob should receive 1 asset ({} ETH spread)",
+            i + 1,
+            spread
+        );
+        if let Asset::Fungible(f) = &added_assets[0] {
+            assert_eq!(f.faucet_id(), eth_faucet.id(), "Case {}: Added asset should be ETH", i + 1);
+            assert_eq!(f.amount(), spread, "Case {}: Bob should receive {} ETH spread", i + 1, spread);
+        } else {
+            panic!("Case {}: Expected fungible asset in Bob's vault", i + 1);
+        }
 
         println!(
-            "  PASSED: Alice {} USDC, Charlie {} ETH, Bob {} ETH spread",
+            "  PASSED: Alice {} USDC, Charlie {} ETH, Bob {} ETH spread (in vault)",
             usdc, charlie_eth, spread
         );
     }
@@ -2564,8 +2444,8 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
         Path::new("../contracts/basic-wallet"),
         true,
     )?);
-    let p2id_script_package = Arc::new(build_project_in_dir(
-        Path::new("../contracts/p2id-tx-script"),
+    let consume_asset_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/consume-asset-script"),
         true,
     )?);
     println!("Contracts built.\n");
@@ -2595,8 +2475,8 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
         (40, 20, 10, 5, 2),    // 2:1 / 2:1, spread=6
         (14, 7, 10, 5, 3),     // 2:1 / 2:1, spread=9
         // Mixed ratios
-        (90, 45, 80, 40, 20), // 2:1 / 2:1, spread=60
-        (30, 15, 24, 8, 4),   // 2:1 / 3:1, spread=20
+        (90, 45, 80, 40, 20),    // 2:1 / 2:1, spread=60
+        (30, 15, 24, 8, 4),      // 2:1 / 3:1, spread=20
         (200, 100, 150, 50, 25), // 2:1 / 3:1, spread=125
         // Alice's offered <= requested (ratio 1:2 on Alice side)
         (10, 20, 30, 10, 4), // 1:2 / 3:1, spread=2
@@ -2784,7 +2664,7 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
         builder.add_output_note(OutputNote::Full(charlie_swap_note.clone()));
 
         // Build tx_script from shared package
-        let program = p2id_script_package.unwrap_program();
+        let program = consume_asset_package.unwrap_program();
         let tx_script =
             TransactionScript::from_parts(program.mast_forest().clone(), program.entrypoint());
 
@@ -2823,46 +2703,9 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
             i + 1
         ));
 
-        // Bob's spread P2ID note
-        let bob_p2id_tag = compute_p2id_tag_for_local_account(bob.id());
-        let bob_p2id_tag_felt = Felt::new(u32::from(bob_p2id_tag) as u64);
-        let note_type_felt: Felt = NoteType::Public.into();
-
-        let bob_serial = Word::from([
-            alice_swap_note.recipient().serial_num()[0] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[1] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[2] + Felt::new(2),
-            alice_swap_note.recipient().serial_num()[3] + Felt::new(2),
-        ]);
-        let bob_aux = Felt::new(spread);
-        let bob_asset = FungibleAsset::new(eth_faucet.id(), spread)?;
-        let bob_recipient = build_p2id_recipient(bob.id(), bob_serial)?;
-        let bob_note_assets = NoteAssets::new(vec![bob_asset.into()])?;
-        let bob_aux_word = Word::from([bob_aux, Felt::ZERO, Felt::ZERO, Felt::ZERO]);
-        let bob_attachment = NoteAttachment::new_word(NoteAttachmentScheme::none(), bob_aux_word);
-        let bob_meta = NoteMetadata::new(bob.id(), NoteType::Public, bob_p2id_tag)
-            .with_attachment(bob_attachment);
-        let bob_p2id_note = Note::new(bob_note_assets, bob_meta, bob_recipient);
-
-        // Advice stack for p2id-tx-script (1 spread note)
+        // Advice stack for spread (assets consumed directly into Bob's vault)
         let bob_asset_word = Word::from(Asset::from(FungibleAsset::new(eth_faucet.id(), spread)?));
         let advice_stack: Vec<Felt> = vec![
-            // Word 0: serial_num
-            bob_serial[0],
-            bob_serial[1],
-            bob_serial[2],
-            bob_serial[3],
-            // Word 1: [recipient_prefix, recipient_suffix, tag, note_type]
-            bob.id().prefix().into(),
-            bob.id().suffix(),
-            bob_p2id_tag_felt,
-            note_type_felt,
-            // Word 2: [aux, 0, 0, 0]
-            bob_aux,
-            Felt::ZERO,
-            Felt::ZERO,
-            Felt::ZERO,
-            // Word 3: asset_word
             bob_asset_word[0],
             bob_asset_word[1],
             bob_asset_word[2],
@@ -2899,15 +2742,9 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
                 charlie_remaining_usdc,
                 "Charlie remainder",
             ),
-            (
-                bob_p2id_note.id(),
-                eth_faucet.id(),
-                spread,
-                "Bob spread P2ID",
-            ),
         ];
 
-        // Execute transaction: expect 5 output notes
+        // Execute transaction: expect 4 output notes
         let tx_context = mock_chain
             .build_tx_context(
                 bob.id(),
@@ -2922,7 +2759,6 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
                 OutputNote::Full(alice_remainder_note),
                 OutputNote::Full(charlie_p2id_note),
                 OutputNote::Full(charlie_remainder_note),
-                OutputNote::Full(bob_p2id_note),
             ])
             .extend_note_args(note_args_map)
             .build()?;
@@ -2933,8 +2769,8 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
         let output_notes = executed_tx.output_notes();
         assert_eq!(
             output_notes.num_notes(),
-            5,
-            "Case {}: Expected 5 notes (2 P2ID + 2 remainder + 1 spread), got {}",
+            4,
+            "Case {}: Expected 4 notes (2 P2ID + 2 remainder), got {}",
             i + 1,
             output_notes.num_notes()
         );
@@ -2980,7 +2816,7 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
             assert!(found, "Case {}: {} note not found in output", i + 1, label);
         }
 
-        // Verify total asset conservation
+        // Verify total asset conservation (notes only, spread goes to vault)
         let mut total_usdc_out: u64 = 0;
         let mut total_eth_out: u64 = 0;
         for (_, expected_faucet, expected_amount, _) in &expected_note_checks {
@@ -2990,6 +2826,8 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
                 total_eth_out += expected_amount;
             }
         }
+        // ETH conservation: notes output + spread in vault = total ETH input
+        total_eth_out += spread;
         assert_eq!(
             total_usdc_out,
             *charlie_usdc,
@@ -3003,7 +2841,7 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
             i + 1
         );
 
-        // Bob's vault should be empty
+        // Bob's vault should have the spread added directly
         let vault_delta = executed_tx.account_delta().vault();
         assert_eq!(
             vault_delta.removed_assets().count(),
@@ -3011,9 +2849,23 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
             "Case {}: Bob should not spend any assets",
             i + 1
         );
+        let added_assets: Vec<Asset> = vault_delta.added_assets().collect();
+        assert_eq!(
+            added_assets.len(),
+            1,
+            "Case {}: Bob should receive 1 asset ({} ETH spread)",
+            i + 1,
+            spread
+        );
+        if let Asset::Fungible(f) = &added_assets[0] {
+            assert_eq!(f.faucet_id(), eth_faucet.id(), "Case {}: Added asset should be ETH", i + 1);
+            assert_eq!(f.amount(), spread, "Case {}: Bob should receive {} ETH spread", i + 1, spread);
+        } else {
+            panic!("Case {}: Expected fungible asset in Bob's vault", i + 1);
+        }
 
         println!(
-            "  PASSED: 5 notes | Alice P2ID {} USDC + Rem {}ETH | Charlie P2ID {} ETH + Rem {} USDC | Bob {} ETH spread",
+            "  PASSED: 4 notes | Alice P2ID {} USDC + Rem {}ETH | Charlie P2ID {} ETH + Rem {} USDC | Bob {} ETH spread (in vault)",
             alice_fill_usdc, alice_remaining_eth, charlie_fill_eth, charlie_remaining_usdc, spread
         );
     }
