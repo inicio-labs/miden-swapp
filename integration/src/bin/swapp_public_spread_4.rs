@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     let tx_id = client
         .submit_new_transaction(solver_id, consume_request)
         .await
-        .context("Failed to execute cross-swap transaction")?;
+        .map_err(|e| anyhow::anyhow!("Failed to execute cross-swap transaction: {:?}", e))?;
     println!("\nSolver consumed both notes. TX: {:?}", tx_id);
 
     println!("Waiting for processing...");
