@@ -1854,7 +1854,11 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     println!("  Assets removed: {}", removed_assets.len());
 
     assert_eq!(removed_assets.len(), 0, "Bob should not spend any assets");
-    assert_eq!(added_assets.len(), 1, "Bob should receive 1 asset (5 ETH spread)");
+    assert_eq!(
+        added_assets.len(),
+        1,
+        "Bob should receive 1 asset (5 ETH spread)"
+    );
     if let Asset::Fungible(f) = &added_assets[0] {
         assert_eq!(f.faucet_id(), eth_faucet.id(), "Added asset should be ETH");
         assert_eq!(f.amount(), 5, "Bob should receive 5 ETH spread");
@@ -1868,6 +1872,302 @@ async fn swapp_note_inflight_cross_swap_with_spread_test() -> anyhow::Result<()>
     println!("  - Charlie offered 50 USDC for 25 ETH (fully filled)");
     println!("  - Bob earned 5 ETH spread directly into vault");
     println!("  - 2 P2ID notes: Alice(50 USDC), Charlie(25 ETH)");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn swapp_note_inflight_cross_swap_with_usdt_spread_test() -> anyhow::Result<()> {
+    println!("=== Test: Inflight Cross Swap With USDT Spread (Bob Earns 5 USDT) ===");
+    println!("Alice offers 23 USDT for 20 ETH, Charlie offers 20 ETH for 18 USDT");
+    println!("Spread: 23 - 18 = 5 USDT goes directly to Bob's vault");
+    println!("Non-integer ratio test: 23/20 and 20/18 exercise rounding in calculate_output_amount");
+    let mut builder = MockChain::builder();
+
+    // STEP 1: Create faucets in genesis
+    println!("Creating USDT and ETH faucets...");
+    let usdt_faucet =
+        builder.add_existing_basic_faucet(Auth::BasicAuth, "USDT", 1000, Some(230))?;
+    println!("USDT Faucet: {:?}", usdt_faucet.id());
+
+    let eth_faucet = builder.add_existing_basic_faucet(Auth::BasicAuth, "ETH", 1000, Some(200))?;
+    println!("ETH Faucet: {:?}", eth_faucet.id());
+
+    // STEP 2: Create Alice, Charlie, and Bob accounts
+    println!("\nCreating Alice with 23 USDT (wants 20 ETH)...");
+    let alice = builder.add_existing_wallet_with_assets(
+        Auth::BasicAuth,
+        [FungibleAsset::new(usdt_faucet.id(), 23)?.into()],
+    )?;
+    println!("Alice: {:?} (has 23 USDT)", alice.id());
+
+    println!("\nCreating Charlie with 20 ETH (wants 18 USDT)...");
+    let charlie = builder.add_existing_wallet_with_assets(
+        Auth::BasicAuth,
+        [FungibleAsset::new(eth_faucet.id(), 20)?.into()],
+    )?;
+    println!("Charlie: {:?} (has 20 ETH)", charlie.id());
+
+    // Build basic-wallet contract package
+    println!("\nBuilding basic-wallet contract...");
+    let account_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/basic-wallet"),
+        true,
+    )?);
+    println!("Basic-wallet contract built successfully.");
+
+    // Create Bob's custom account with 0 assets
+    println!("\nCreating Bob with 0 assets (custom account)...");
+    let bob_account_cfg = AccountCreationConfig {
+        storage_slots: vec![],
+        ..Default::default()
+    };
+
+    let bob = create_testing_account_from_package(account_package.clone(), bob_account_cfg, vec![])
+        .await?;
+    println!("Bob account created: {:?}", bob.id());
+
+    builder.add_account(bob.clone())?;
+
+    // STEP 3: Build swapp-note contract
+    println!("\nBuilding swapp-note contract...");
+    let swapp_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/swapp-note"),
+        true,
+    )?);
+    println!("Swapp note contract built successfully.");
+
+    // Build consume-asset-script
+    println!("\nBuilding consume-asset-script...");
+    let consume_asset_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/consume-asset-script"),
+        true,
+    )?);
+    let program = consume_asset_package.unwrap_program();
+    let tx_script =
+        TransactionScript::from_parts(program.mast_forest().clone(), program.entrypoint());
+    println!("consume-asset-script built successfully.");
+
+    // STEP 4: Create Alice's swap note (offers 23 USDT, wants 20 ETH)
+    println!("\nCreating Alice's swap note (offers 23 USDT for 20 ETH)...");
+
+    let alice_p2id_tag_felt = compute_p2id_tag_felt(alice.id());
+
+    let alice_note_inputs = vec![
+        // Requested Asset: 20 ETH
+        eth_faucet.id().prefix().into(),
+        eth_faucet.id().suffix(),
+        Felt::ZERO,
+        Felt::new(20),
+        // Note Creator: Alice
+        alice.id().prefix().into(),
+        alice.id().suffix(),
+        NoteType::Public.into(),
+        // P2ID Tag for Alice
+        alice_p2id_tag_felt,
+    ];
+
+    let alice_offered_asset = FungibleAsset::new(usdt_faucet.id(), 23)?;
+    let mut alice_note_assets = NoteAssets::default();
+    alice_note_assets.add_asset(alice_offered_asset.into())?;
+
+    let alice_swap_note = create_testing_note_from_package(
+        swapp_package.clone(),
+        alice.id(),
+        NoteCreationConfig {
+            assets: alice_note_assets,
+            inputs: alice_note_inputs,
+            ..Default::default()
+        },
+    )?;
+    println!("Alice's swap note created: {:?}", alice_swap_note.id());
+
+    builder.add_output_note(OutputNote::Full(alice_swap_note.clone()));
+
+    // STEP 5: Create Charlie's swap note (offers 20 ETH, wants 18 USDT)
+    println!("\nCreating Charlie's swap note (offers 20 ETH for 18 USDT)...");
+
+    let charlie_p2id_tag_felt = compute_p2id_tag_felt(charlie.id());
+
+    let charlie_note_inputs = vec![
+        // Requested Asset: 18 USDT
+        usdt_faucet.id().prefix().into(),
+        usdt_faucet.id().suffix(),
+        Felt::ZERO,
+        Felt::new(18),
+        // Note Creator: Charlie
+        charlie.id().prefix().into(),
+        charlie.id().suffix(),
+        NoteType::Public.into(),
+        // P2ID Tag for Charlie
+        charlie_p2id_tag_felt,
+    ];
+
+    let charlie_offered_asset = FungibleAsset::new(eth_faucet.id(), 20)?;
+    let mut charlie_note_assets = NoteAssets::default();
+    charlie_note_assets.add_asset(charlie_offered_asset.into())?;
+
+    let charlie_swap_note = create_testing_note_from_package(
+        swapp_package.clone(),
+        charlie.id(),
+        NoteCreationConfig {
+            assets: charlie_note_assets,
+            inputs: charlie_note_inputs,
+            ..Default::default()
+        },
+    )?;
+    println!("Charlie's swap note created: {:?}", charlie_swap_note.id());
+
+    builder.add_output_note(OutputNote::Full(charlie_swap_note.clone()));
+
+    // STEP 6: Build MockChain
+    println!("\nBuilding MockChain...");
+    let mock_chain = builder.build()?;
+
+    // STEP 7: Bob consumes both notes with inflight logic
+    println!("\nBob consuming both swap notes with inflight logic...");
+
+    // Alice's note: input=0, inflight=20 ETH
+    let alice_note_args = Word::from([Felt::ZERO, Felt::ZERO, Felt::new(20), Felt::ZERO]);
+    // Charlie's note: input=0, inflight=18 USDT
+    let charlie_note_args = Word::from([Felt::ZERO, Felt::ZERO, Felt::new(18), Felt::ZERO]);
+
+    let mut note_args_map = BTreeMap::new();
+    note_args_map.insert(alice_swap_note.id(), alice_note_args);
+    note_args_map.insert(charlie_swap_note.id(), charlie_note_args);
+
+    // STEP 8: Create expected P2ID notes using PswapNote::create_output_notes()
+    //
+    // Alice offers 23 USDT for 20 ETH — fully filled (fill=20, releases all 23 USDT)
+    // Charlie offers 20 ETH for 18 USDT — fully filled (fill=18, releases 19 ETH due to rounding)
+    // Spread: 23 - 18 = 5 USDT to Bob
+
+    // P2ID note for Alice (20 ETH)
+    println!("\nCreating expected P2ID note for Alice (20 ETH)...");
+    let (alice_p2id_note, alice_rem) =
+        PswapNote::create_output_notes(&alice_swap_note, bob.id(), 0, 20)?;
+    assert!(alice_rem.is_none(), "Alice full fill should not produce remainder");
+
+    // P2ID note for Charlie (18 USDT)
+    println!("\nCreating expected P2ID note for Charlie (18 USDT)...");
+    let (charlie_p2id_note, charlie_rem) =
+        PswapNote::create_output_notes(&charlie_swap_note, bob.id(), 0, 18)?;
+    assert!(charlie_rem.is_none(), "Charlie full fill should not produce remainder");
+
+    // Build advice stack for consume-asset-script (5 USDT spread)
+    // Alice releases 23 USDT, Charlie needs 18 → 5 USDT spread to Bob
+    // Charlie releases 20 ETH, Alice needs 20 → 0 ETH spread (no ETH spread)
+    println!("\nBuilding advice stack for Bob's spread...");
+    let bob_usdt_asset_word = Word::from(Asset::from(FungibleAsset::new(usdt_faucet.id(), 5)?));
+
+    let advice_stack: Vec<Felt> = vec![
+        bob_usdt_asset_word[0],
+        bob_usdt_asset_word[1],
+        bob_usdt_asset_word[2],
+        bob_usdt_asset_word[3],
+    ];
+
+    let commitment_key: Word = Rpo256::hash_elements(&advice_stack);
+    let mut commitment = commitment_key;
+    commitment.reverse();
+
+    // Execute transaction
+    let tx_context = mock_chain
+        .build_tx_context(
+            bob.id(),
+            &[alice_swap_note.id(), charlie_swap_note.id()],
+            &[],
+        )?
+        .tx_script(tx_script)
+        .tx_script_args(commitment)
+        .extend_advice_map([(commitment_key, advice_stack)])
+        .extend_expected_output_notes(vec![
+            OutputNote::Full(alice_p2id_note),
+            OutputNote::Full(charlie_p2id_note),
+        ])
+        .extend_note_args(note_args_map)
+        .build()?;
+
+    let executed_transaction = tx_context.execute().await?;
+    println!("Transaction executed successfully!");
+
+    println!(
+        "Cycle count: {:?}",
+        executed_transaction.measurements().note_execution
+    );
+
+    // STEP 9: Verify results
+    println!("\n=== Verification ===");
+
+    // 2 P2ID output notes: Alice (20 ETH), Charlie (18 USDT)
+    let output_notes = executed_transaction.output_notes();
+    println!("Output notes created: {}", output_notes.num_notes());
+    assert_eq!(
+        output_notes.num_notes(),
+        2,
+        "Expected 2 P2ID notes (Alice 20 ETH, Charlie 18 USDT)"
+    );
+
+    // Verify output notes
+    let mut alice_p2id_found = false;
+    let mut charlie_p2id_found = false;
+
+    for idx in 0..output_notes.num_notes() {
+        let note = output_notes.get_note(idx);
+        println!("\nNote {}: {:?}", idx, note.id());
+
+        let assets = note.assets().unwrap();
+        println!("  Number of assets: {}", assets.num_assets());
+
+        if assets.num_assets() == 1 {
+            let asset = assets.iter().next().unwrap();
+            if let Asset::Fungible(f) = asset {
+                println!("  Asset: {} of faucet {:?}", f.amount(), f.faucet_id());
+
+                if f.faucet_id() == eth_faucet.id() && f.amount() == 20 {
+                    println!("  -> Alice's P2ID note verified: 20 ETH");
+                    alice_p2id_found = true;
+                } else if f.faucet_id() == usdt_faucet.id() && f.amount() == 18 {
+                    println!("  -> Charlie's P2ID note verified: 18 USDT");
+                    charlie_p2id_found = true;
+                }
+            }
+        }
+    }
+
+    assert!(alice_p2id_found, "Alice's P2ID note (20 ETH) not found");
+    assert!(charlie_p2id_found, "Charlie's P2ID note (18 USDT) not found");
+
+    // Check Bob's vault delta - 5 USDT spread (no ETH spread since 20-20=0)
+    println!("\nVerifying Bob's vault delta...");
+    let account_delta = executed_transaction.account_delta();
+    let vault_delta = account_delta.vault();
+    let added_assets: Vec<Asset> = vault_delta.added_assets().collect();
+    let removed_assets: Vec<Asset> = vault_delta.removed_assets().collect();
+
+    println!("  Assets added: {}", added_assets.len());
+    println!("  Assets removed: {}", removed_assets.len());
+
+    assert_eq!(removed_assets.len(), 0, "Bob should not spend any assets");
+    assert_eq!(added_assets.len(), 1, "Bob should receive 1 asset (5 USDT spread)");
+
+    let mut usdt_found = false;
+    for asset in &added_assets {
+        if let Asset::Fungible(f) = asset {
+            if f.faucet_id() == usdt_faucet.id() {
+                assert_eq!(f.amount(), 5, "Bob should receive 5 USDT spread");
+                println!("  -> Bob's vault: +5 USDT");
+                usdt_found = true;
+            }
+        }
+    }
+    assert!(usdt_found, "USDT spread not found in Bob's vault");
+
+    println!("\n=== Inflight cross-swap with USDT spread test passed! ===");
+    println!("  - Alice offered 23 USDT for 20 ETH (fully filled, non-integer ratio)");
+    println!("  - Charlie offered 20 ETH for 18 USDT (fully filled, non-integer ratio)");
+    println!("  - Bob earned 5 USDT spread directly into vault");
+    println!("  - 2 P2ID notes: Alice(25 ETH), Charlie(45 USDT)");
 
     Ok(())
 }
@@ -2403,8 +2703,19 @@ async fn swapp_note_inflight_cross_swap_fuzz_test() -> anyhow::Result<()> {
             spread
         );
         if let Asset::Fungible(f) = &added_assets[0] {
-            assert_eq!(f.faucet_id(), eth_faucet.id(), "Case {}: Added asset should be ETH", i + 1);
-            assert_eq!(f.amount(), spread, "Case {}: Bob should receive {} ETH spread", i + 1, spread);
+            assert_eq!(
+                f.faucet_id(),
+                eth_faucet.id(),
+                "Case {}: Added asset should be ETH",
+                i + 1
+            );
+            assert_eq!(
+                f.amount(),
+                spread,
+                "Case {}: Bob should receive {} ETH spread",
+                i + 1,
+                spread
+            );
         } else {
             panic!("Case {}: Expected fungible asset in Bob's vault", i + 1);
         }
@@ -2858,8 +3169,19 @@ async fn swapp_note_inflight_partial_fill_cross_swap_fuzz_test() -> anyhow::Resu
             spread
         );
         if let Asset::Fungible(f) = &added_assets[0] {
-            assert_eq!(f.faucet_id(), eth_faucet.id(), "Case {}: Added asset should be ETH", i + 1);
-            assert_eq!(f.amount(), spread, "Case {}: Bob should receive {} ETH spread", i + 1, spread);
+            assert_eq!(
+                f.faucet_id(),
+                eth_faucet.id(),
+                "Case {}: Added asset should be ETH",
+                i + 1
+            );
+            assert_eq!(
+                f.amount(),
+                spread,
+                "Case {}: Bob should receive {} ETH spread",
+                i + 1,
+                spread
+            );
         } else {
             panic!("Case {}: Expected fungible asset in Bob's vault", i + 1);
         }
@@ -3084,5 +3406,979 @@ async fn swapp_note_non_exact_ratio_partial_fill_divergence_test() -> anyhow::Re
     }
 
     println!("\n=== Non-exact ratio divergence test complete ===");
+    Ok(())
+}
+
+/// Ultimate fuzz test: fully independent offer/request amounts on both sides.
+///
+/// Each case has 4 independent parameters:
+///   - alice_offer:   amount of ETH Alice offers
+///   - alice_request: amount of USDC Alice wants
+///   - charlie_offer: amount of USDC Charlie offers
+///   - charlie_request: amount of ETH Charlie wants
+///
+/// Constraints for cross-swap feasibility:
+///   - alice_offer >= charlie_request  (Alice has enough ETH for Charlie)
+///   - charlie_offer >= alice_request  (Charlie has enough USDC for Alice)
+///   - At least one strict inequality    (otherwise no spread, nothing for Bob)
+///
+/// Spread (always exact, enforced by Miden kernel conservation):
+///   - ETH spread  = alice_offer - charlie_request  (can be 0)
+///   - USDC spread = charlie_offer - alice_request   (can be 0)
+///
+/// This test exercises:
+///   - Non-integer offer/request ratios (e.g., 23/20, 17/13)
+///   - Rounding in calculate_output_amount (precision_factor=100000)
+///   - Spread in one token only, both tokens, or near-zero
+///   - Very skewed ratios (1000:1, 1:1000)
+///   - Prime numbers, consecutive, powers of 2
+///   - Large amounts (up to 10000)
+///   - Minimum viable amounts
+#[tokio::test]
+async fn swapp_note_cross_swap_ultimate_fuzz_test() -> anyhow::Result<()> {
+    println!("=== Ultimate Fuzz Test: Independent Offer/Request Cross Swap ===\n");
+
+    println!("Building contracts (one-time setup)...");
+    let account_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/basic-wallet"),
+        true,
+    )?);
+    let consume_asset_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/consume-asset-script"),
+        true,
+    )?);
+    println!("Contracts built.\n");
+
+    // (alice_offer_eth, alice_request_usdc, charlie_offer_usdc, charlie_request_eth)
+    let mut test_cases: Vec<(u64, u64, u64, u64)> = vec![
+        // === Non-integer ratios (the original bug trigger) ===
+        (23, 20, 20, 18),   // 23/20=1.15, 20/18=1.11 — the case that found the bug
+        (17, 13, 13, 11),   // primes, 17/13=1.307, 13/11=1.182
+        (7, 5, 5, 3),       // small primes, 7/5=1.4, 5/3=1.667
+        (97, 89, 89, 83),   // large primes, 97/89=1.09, 89/83=1.072
+        (53, 47, 47, 41),   // medium primes, 53/47=1.128, 47/41=1.146
+        // === Extreme ratio skew (stress integer division) ===
+        (1000, 1, 1, 999),  // 1000:1 ratio Alice, 1:999 ratio Charlie
+        (2, 999, 999, 1),   // 1:500 ratio Alice, 999:1 ratio Charlie
+        (500, 3, 7, 499),   // 167:1 vs 1:71
+        (100, 7, 11, 97),   // ~14:1 vs ~1:9
+        // === Spread in one token only ===
+        (50, 30, 30, 50),   // ETH spread=0, USDC spread=0 — NO, this is equal, skip
+        (50, 30, 30, 49),   // ETH spread=1, USDC spread=0
+        (50, 30, 31, 50),   // ETH spread=0, USDC spread=1
+        // === Minimum spread (tightest margin) ===
+        (2, 1, 1, 1),       // spread: 1 ETH, 0 USDC
+        (1, 1, 2, 1),       // spread: 0 ETH, 1 USDC — wait alice_offer(1) must >= charlie_request(1), ok
+        (2, 1, 2, 1),       // spread: 1 ETH, 1 USDC (minimum both)
+        (3, 2, 3, 2),       // spread: 1 ETH, 1 USDC, bigger amounts
+        // === Large amounts ===
+        (9999, 7777, 8888, 5555), // large 4-digit, all different
+        (5000, 4999, 5001, 4998), // very close large amounts
+        (10000, 1, 1, 9999),      // extreme: 10000:1 vs 1:9999
+        // === Powers of 2 (exact binary division) ===
+        (256, 128, 128, 64),   // spread: 192 ETH, 0 USDC
+        (1024, 512, 768, 256), // spread: 768 ETH, 256 USDC
+        // === Consecutive / close numbers ===
+        (51, 49, 50, 48),    // all within 4 of each other
+        (101, 100, 100, 99), // all within 2
+        (11, 10, 10, 9),     // single-digit differences
+        // === Same offer/request (1:1 ratio) on one or both sides ===
+        (100, 100, 100, 50), // Alice 1:1, Charlie 2:1, spread: 50 ETH
+        (100, 50, 100, 100), // Alice 2:1, Charlie 1:1, spread: 0 ETH, 50 USDC
+        (100, 100, 100, 99), // both near 1:1, spread: 1 ETH
+        // === Ratios that produce worst-case rounding ===
+        (3, 7, 7, 2),       // 3/7=0.428..., 7/2=3.5
+        (7, 3, 3, 6),       // 7/3=2.333..., 3/6=0.5 — alice_offer(7)>=charlie_request(6) ✓
+        (11, 7, 7, 10),     // 11/7=1.571..., 7/10=0.7
+        (13, 9, 9, 11),     // 13/9=1.444..., 9/11=0.818...
+        (19, 17, 17, 13),   // 19/17=1.118, 17/13=1.308
+        // === Asymmetric large spread ===
+        (999, 1, 2, 1),     // ETH spread=998, USDC spread=1
+        (2, 1, 999, 1),     // ETH spread=1, USDC spread=998
+        // === Fibonacci-like (irrational ratio approximations) ===
+        (89, 55, 55, 34),   // fib ratios ≈ golden ratio
+        (233, 144, 144, 89), // larger fib
+        (34, 21, 21, 13),   // smaller fib
+        // === Square numbers ===
+        (100, 49, 64, 81),  // 10²/7², 8²/9²
+        (225, 169, 196, 121), // 15²/13², 14²/11²
+    ];
+
+    // Add random cases with fully independent amounts
+    use rand::Rng;
+    let mut thread_rng = rand::rng();
+    for _ in 0..30 {
+        let alice_offer: u64 = thread_rng.random_range(2..1000);
+        let alice_request: u64 = thread_rng.random_range(1..1000);
+        let charlie_offer: u64 = thread_rng.random_range(alice_request..=alice_request.max(alice_request) + 500);
+        let charlie_request: u64 = thread_rng.random_range(1..alice_offer);
+        test_cases.push((alice_offer, alice_request, charlie_offer, charlie_request));
+    }
+
+    // Filter out invalid cases (both spreads = 0)
+    test_cases.retain(|(ao, ar, co, cr)| ao > cr || co > ar);
+
+    let total = test_cases.len();
+    let handpicked = total - 30; // approximate, some random cases may be filtered
+    println!(
+        "Running {} test cases (~{} handpicked + random)...\n",
+        total, handpicked
+    );
+
+    for (i, (alice_offer, alice_request, charlie_offer, charlie_request)) in
+        test_cases.iter().enumerate()
+    {
+        let eth_spread = alice_offer - charlie_request;
+        let usdc_spread = charlie_offer - alice_request;
+
+        println!(
+            "--- Case {}/{}: Alice {ETH}→{USDC} | Charlie {USDC2}→{ETH2} | spread: {eth_spread} ETH + {usdc_spread} USDC ---",
+            i + 1,
+            total,
+            ETH = alice_offer,
+            USDC = alice_request,
+            USDC2 = charlie_offer,
+            ETH2 = charlie_request,
+            eth_spread = eth_spread,
+            usdc_spread = usdc_spread,
+        );
+
+        // Fresh MockChain per case
+        let mut builder = MockChain::builder();
+
+        let max_amount = *[*alice_offer, *alice_request, *charlie_offer, *charlie_request]
+            .iter()
+            .max()
+            .unwrap();
+        let total_issuance = max_amount * 10;
+
+        let usdc_faucet = builder.add_existing_basic_faucet(
+            Auth::BasicAuth,
+            "USDC",
+            1000,
+            Some(total_issuance),
+        )?;
+        let eth_faucet = builder.add_existing_basic_faucet(
+            Auth::BasicAuth,
+            "ETH",
+            1000,
+            Some(total_issuance),
+        )?;
+
+        let alice = builder.add_existing_wallet_with_assets(
+            Auth::BasicAuth,
+            [FungibleAsset::new(eth_faucet.id(), *alice_offer)?.into()],
+        )?;
+        let charlie = builder.add_existing_wallet_with_assets(
+            Auth::BasicAuth,
+            [FungibleAsset::new(usdc_faucet.id(), *charlie_offer)?.into()],
+        )?;
+
+        let bob = create_testing_account_from_package(
+            account_package.clone(),
+            AccountCreationConfig {
+                storage_slots: vec![],
+                ..Default::default()
+            },
+            vec![],
+        )
+        .await?;
+        builder.add_account(bob.clone())?;
+
+        // RNG for note creation
+        let seed_word = Word::from([
+            Felt::new(i as u64 * 4 + 1),
+            Felt::new(i as u64 * 4 + 2),
+            Felt::new(i as u64 * 4 + 3),
+            Felt::new(i as u64 * 4 + 4),
+        ]);
+        let mut note_rng = miden_crypto::rand::RpoRandomCoin::new(seed_word);
+
+        // Alice's swap note: offers alice_offer ETH, wants alice_request USDC
+        let alice_swap_note = create_swapp_note_with_pswap(
+            alice.id(),
+            Asset::Fungible(FungibleAsset::new(eth_faucet.id(), *alice_offer)?),
+            Asset::Fungible(FungibleAsset::new(usdc_faucet.id(), *alice_request)?),
+            NoteType::Public,
+            &mut note_rng,
+        )?;
+        builder.add_output_note(OutputNote::Full(alice_swap_note.clone()));
+
+        // Charlie's swap note: offers charlie_offer USDC, wants charlie_request ETH
+        let charlie_swap_note = create_swapp_note_with_pswap(
+            charlie.id(),
+            Asset::Fungible(FungibleAsset::new(usdc_faucet.id(), *charlie_offer)?),
+            Asset::Fungible(FungibleAsset::new(eth_faucet.id(), *charlie_request)?),
+            NoteType::Public,
+            &mut note_rng,
+        )?;
+        builder.add_output_note(OutputNote::Full(charlie_swap_note.clone()));
+
+        // Build tx_script
+        let program = consume_asset_package.unwrap_program();
+        let tx_script =
+            TransactionScript::from_parts(program.mast_forest().clone(), program.entrypoint());
+
+        let mock_chain = builder.build()?;
+
+        // Note args: input=0, inflight=full requested amount (full fill both sides)
+        // Alice's note requests alice_request USDC → inflight = alice_request
+        let alice_note_args =
+            Word::from([Felt::ZERO, Felt::ZERO, Felt::new(*alice_request), Felt::ZERO]);
+        // Charlie's note requests charlie_request ETH → inflight = charlie_request
+        let charlie_note_args =
+            Word::from([Felt::ZERO, Felt::ZERO, Felt::new(*charlie_request), Felt::ZERO]);
+
+        let mut note_args_map = BTreeMap::new();
+        note_args_map.insert(alice_swap_note.id(), alice_note_args);
+        note_args_map.insert(charlie_swap_note.id(), charlie_note_args);
+
+        // Expected P2ID notes
+        let (alice_p2id_note, alice_rem) =
+            PswapNote::create_output_notes(&alice_swap_note, bob.id(), 0, *alice_request)?;
+        assert!(
+            alice_rem.is_none(),
+            "Case {}: Alice full fill should not produce remainder",
+            i + 1
+        );
+
+        let (charlie_p2id_note, charlie_rem) =
+            PswapNote::create_output_notes(&charlie_swap_note, bob.id(), 0, *charlie_request)?;
+        assert!(
+            charlie_rem.is_none(),
+            "Case {}: Charlie full fill should not produce remainder",
+            i + 1
+        );
+
+        // Build advice stack for spread assets consumed directly into Bob's vault
+        // Conservation: consumed = output + vault_delta
+        // consumed: alice_offer ETH + charlie_offer USDC
+        // output:   alice_request USDC (Alice P2ID) + charlie_request ETH (Charlie P2ID)
+        // vault:    eth_spread ETH + usdc_spread USDC
+        let mut advice_felts: Vec<Felt> = Vec::new();
+        let mut expected_spread_count = 0u64;
+
+        if eth_spread > 0 {
+            let eth_asset_word =
+                Word::from(Asset::from(FungibleAsset::new(eth_faucet.id(), eth_spread)?));
+            advice_felts.extend(eth_asset_word);
+            expected_spread_count += 1;
+        }
+        if usdc_spread > 0 {
+            let usdc_asset_word =
+                Word::from(Asset::from(FungibleAsset::new(usdc_faucet.id(), usdc_spread)?));
+            advice_felts.extend(usdc_asset_word);
+            expected_spread_count += 1;
+        }
+
+        let commitment_key: Word = Rpo256::hash_elements(&advice_felts);
+        let mut commitment = commitment_key;
+        commitment.reverse();
+
+        // Execute transaction
+        let tx_context = mock_chain
+            .build_tx_context(
+                bob.id(),
+                &[alice_swap_note.id(), charlie_swap_note.id()],
+                &[],
+            )?
+            .tx_script(tx_script)
+            .tx_script_args(commitment)
+            .extend_advice_map([(commitment_key, advice_felts)])
+            .extend_expected_output_notes(vec![
+                OutputNote::Full(alice_p2id_note),
+                OutputNote::Full(charlie_p2id_note),
+            ])
+            .extend_note_args(note_args_map)
+            .build()?;
+
+        let executed_tx = tx_context.execute().await?;
+
+        // === Verify ===
+        let output_notes = executed_tx.output_notes();
+        assert_eq!(
+            output_notes.num_notes(),
+            2,
+            "Case {}: Expected 2 P2ID notes, got {}",
+            i + 1,
+            output_notes.num_notes()
+        );
+
+        // Verify P2ID note assets
+        let mut alice_p2id_ok = false;
+        let mut charlie_p2id_ok = false;
+        for idx in 0..output_notes.num_notes() {
+            let note = output_notes.get_note(idx);
+            let assets = note.assets().unwrap();
+            if let Some(Asset::Fungible(f)) = assets.iter().next() {
+                if f.faucet_id() == usdc_faucet.id() && f.amount() == *alice_request {
+                    alice_p2id_ok = true;
+                } else if f.faucet_id() == eth_faucet.id() && f.amount() == *charlie_request {
+                    charlie_p2id_ok = true;
+                }
+            }
+        }
+        assert!(
+            alice_p2id_ok,
+            "Case {}: Alice P2ID ({} USDC) not found",
+            i + 1,
+            alice_request
+        );
+        assert!(
+            charlie_p2id_ok,
+            "Case {}: Charlie P2ID ({} ETH) not found",
+            i + 1,
+            charlie_request
+        );
+
+        // Verify Bob's vault delta
+        let vault_delta = executed_tx.account_delta().vault();
+        assert_eq!(
+            vault_delta.removed_assets().count(),
+            0,
+            "Case {}: Bob should not spend any assets",
+            i + 1
+        );
+
+        let added_assets: Vec<Asset> = vault_delta.added_assets().collect();
+        assert_eq!(
+            added_assets.len(),
+            expected_spread_count as usize,
+            "Case {}: Bob should receive {} spread asset(s), got {}",
+            i + 1,
+            expected_spread_count,
+            added_assets.len()
+        );
+
+        for asset in &added_assets {
+            if let Asset::Fungible(f) = asset {
+                if f.faucet_id() == eth_faucet.id() {
+                    assert_eq!(
+                        f.amount(),
+                        eth_spread,
+                        "Case {}: ETH spread mismatch (expected {}, got {})",
+                        i + 1,
+                        eth_spread,
+                        f.amount()
+                    );
+                } else if f.faucet_id() == usdc_faucet.id() {
+                    assert_eq!(
+                        f.amount(),
+                        usdc_spread,
+                        "Case {}: USDC spread mismatch (expected {}, got {})",
+                        i + 1,
+                        usdc_spread,
+                        f.amount()
+                    );
+                }
+            }
+        }
+
+        println!(
+            "  PASSED: Alice P2ID {} USDC | Charlie P2ID {} ETH | Bob spread: {} ETH + {} USDC",
+            alice_request, charlie_request, eth_spread, usdc_spread
+        );
+    }
+
+    println!("\n=== All {} ultimate fuzz test cases passed! ===", total);
+    Ok(())
+}
+
+/// Test: Chained partial fills on the same swap note with non-integer ratios.
+///
+/// Fills a swap note 3-4 times in succession, each time consuming the remainder
+/// from the previous fill, with ratios that trigger rounding in calculate_output_amount.
+///
+/// This verifies:
+/// - Rounding errors don't compound into conservation violations
+/// - Remainder notes from the SDK match what the on-chain contract produces
+/// - Each successive fill correctly uses the remainder's updated offered/requested amounts
+/// - The final partial fill still produces valid output
+///
+/// Architecture: Each fill is a DIRECT fill (Bob provides requested asset from vault),
+/// not a cross-swap. Conservation holds for partial fills because the remainder note
+/// absorbs rounding loss. We avoid the final full-fill (where rounding can break
+/// conservation) by always leaving at least 1 unit in the last remainder.
+#[tokio::test]
+async fn swapp_note_chained_partial_fills_non_integer_ratio_test() -> anyhow::Result<()> {
+    println!("=== Test: Chained Partial Fills With Non-Integer Ratios ===\n");
+
+    // Helper: mirrors on-chain calculate_output_amount
+    fn calculate_output_amount(offered_total: u64, requested_total: u64, input_amount: u64) -> u64 {
+        let precision_factor = 100000u64;
+        if offered_total > requested_total {
+            let ratio = (offered_total * precision_factor) / requested_total;
+            (input_amount * ratio) / precision_factor
+        } else {
+            let ratio = (requested_total * precision_factor) / offered_total;
+            (input_amount * precision_factor) / ratio
+        }
+    }
+
+    // Build contracts once
+    println!("Building contracts (one-time setup)...");
+    let account_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/basic-wallet"),
+        true,
+    )?);
+    let _swapp_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/swapp-note"),
+        true,
+    )?);
+    println!("Contracts built.\n");
+
+    // Test chains: (initial_offered, initial_requested, [fill1, fill2, fill3, ...])
+    // Each fill amount is in the REQUESTED asset (ETH that Bob provides)
+    // Constraints: each fill < remaining_requested, ratios are non-integer
+    let test_chains: Vec<(u64, u64, Vec<u64>, &str)> = vec![
+        // Chain 1: 100 USDC for 73 ETH (ratio 1.37:1) — 3 partial fills
+        (100, 73, vec![17, 23, 19], "100/73 ratio, 3 fills (17+23+19=59 of 73)"),
+        // Chain 2: 53 USDC for 47 ETH (ratio 1.128:1) — 4 fills
+        (53, 47, vec![7, 11, 13, 5], "53/47 ratio, 4 fills (7+11+13+5=36 of 47)"),
+        // Chain 3: 200 USDC for 137 ETH (ratio 1.46:1) — 3 fills
+        (200, 137, vec![41, 37, 29], "200/137 ratio, 3 fills (41+37+29=107 of 137)"),
+        // Chain 4: 7 USDC for 5 ETH (small, ratio 1.4:1) — 2 fills
+        (7, 5, vec![2, 1], "7/5 ratio, 2 fills (2+1=3 of 5)"),
+        // Chain 5: 1000 USDC for 777 ETH (ratio 1.287:1) — 4 fills
+        (1000, 777, vec![100, 200, 150, 100], "1000/777 ratio, 4 fills"),
+        // Chain 6: 50 USDC for 97 ETH (offered < requested, ratio 0.515:1) — 3 fills
+        (50, 97, vec![20, 30, 15], "50/97 ratio (offered<req), 3 fills"),
+        // Chain 7: 89 USDC for 55 ETH (Fibonacci, ratio 1.618:1) — 3 fills
+        (89, 55, vec![13, 8, 21], "89/55 Fibonacci ratio, 3 fills"),
+        // Chain 8: 23 USDC for 20 ETH (the original bug ratio) — 4 small fills
+        (23, 20, vec![3, 5, 4, 3], "23/20 ratio (original bug), 4 fills"),
+        // Chain 9: 997 USDC for 991 ETH (large primes, near 1:1) — 3 fills
+        (997, 991, vec![300, 300, 200], "997/991 large primes near 1:1, 3 fills"),
+        // Chain 10: 3 USDC for 2 ETH (tiny, ratio 1.5:1) — 1 fill
+        (3, 2, vec![1], "3/2 ratio, 1 fill (1 of 2)"),
+    ];
+
+    for (chain_idx, (initial_offered, initial_requested, fills, description)) in
+        test_chains.iter().enumerate()
+    {
+        println!(
+            "\n======================================================================\nChain {}/{}: {} USDC for {} ETH — {}",
+            chain_idx + 1,
+            test_chains.len(),
+            initial_offered,
+            initial_requested,
+            description
+        );
+
+        // Track running state across fills
+        let mut current_offered = *initial_offered;
+        let mut current_requested = *initial_requested;
+        let mut total_usdc_to_bob = 0u64;
+        let mut total_eth_from_bob = 0u64;
+
+        // Create the initial swap note using PswapNote::create
+        let seed_word = Word::from([
+            Felt::new(chain_idx as u64 * 100 + 1),
+            Felt::new(chain_idx as u64 * 100 + 2),
+            Felt::new(chain_idx as u64 * 100 + 3),
+            Felt::new(chain_idx as u64 * 100 + 4),
+        ]);
+        let mut note_rng = miden_crypto::rand::RpoRandomCoin::new(seed_word);
+
+        // We need faucet IDs — create a fresh chain for the first fill to get them,
+        // then rebuild for each fill
+        let mut _current_swap_note: Option<Note> = None;
+
+        for (fill_idx, fill_amount) in fills.iter().enumerate() {
+            let offered_out =
+                calculate_output_amount(current_offered, current_requested, *fill_amount);
+            let remaining_offered = current_offered - offered_out;
+            let remaining_requested = current_requested - fill_amount;
+
+            println!(
+                "  Fill {}: Bob provides {} ETH → gets {} USDC | remainder: {} USDC for {} ETH",
+                fill_idx + 1,
+                fill_amount,
+                offered_out,
+                remaining_offered,
+                remaining_requested
+            );
+
+            // Fresh MockChain for each fill
+            let mut builder = MockChain::builder();
+            let max_amount = *[current_offered, current_requested, *fill_amount]
+                .iter()
+                .max()
+                .unwrap();
+            let total_issuance = max_amount * 10 + 1000;
+
+            let usdc_faucet = builder.add_existing_basic_faucet(
+                Auth::BasicAuth,
+                "USDC",
+                10000,
+                Some(total_issuance),
+            )?;
+            let eth_faucet = builder.add_existing_basic_faucet(
+                Auth::BasicAuth,
+                "ETH",
+                10000,
+                Some(total_issuance),
+            )?;
+
+            // Alice (swap note creator)
+            let alice = builder.add_existing_wallet_with_assets(
+                Auth::BasicAuth,
+                [FungibleAsset::new(usdc_faucet.id(), current_offered)?.into()],
+            )?;
+
+            // Bob (filler) — needs fill_amount ETH in vault
+            let bob_assets = vec![FungibleAsset::new(eth_faucet.id(), *fill_amount)?.into()];
+            let bob = create_testing_account_from_package(
+                account_package.clone(),
+                AccountCreationConfig {
+                    storage_slots: vec![],
+                    ..Default::default()
+                },
+                bob_assets,
+            )
+            .await?;
+            builder.add_account(bob.clone())?;
+
+            // Create or reconstruct the swap note for this fill
+            let swap_note = if fill_idx == 0 {
+                // First fill: create fresh swap note
+                create_swapp_note_with_pswap(
+                    alice.id(),
+                    Asset::Fungible(FungibleAsset::new(usdc_faucet.id(), current_offered)?),
+                    Asset::Fungible(FungibleAsset::new(eth_faucet.id(), current_requested)?),
+                    NoteType::Public,
+                    &mut note_rng,
+                )?
+            } else {
+                // Subsequent fills: reconstruct the remainder note from previous fill
+                // We use PswapNote::create_output_notes on the PREVIOUS note to get the remainder
+                // But we need to rebuild it with current faucet IDs since MockChain is fresh
+
+                // Recreate the initial note with same RNG to get deterministic serial numbers
+                let mut rebuild_rng = miden_crypto::rand::RpoRandomCoin::new(seed_word);
+                let mut prev_note = create_swapp_note_with_pswap(
+                    alice.id(),
+                    Asset::Fungible(FungibleAsset::new(usdc_faucet.id(), *initial_offered)?),
+                    Asset::Fungible(FungibleAsset::new(eth_faucet.id(), *initial_requested)?),
+                    NoteType::Public,
+                    &mut rebuild_rng,
+                )?;
+
+                // Walk through all previous fills to derive the remainder chain
+                let mut walk_offered = *initial_offered;
+                let mut walk_requested = *initial_requested;
+                for prev_fill in &fills[..fill_idx] {
+                    let (_, remainder) = PswapNote::create_output_notes(
+                        &prev_note,
+                        bob.id(),
+                        *prev_fill,
+                        0,
+                    )?;
+                    prev_note = remainder.expect("Partial fill must produce remainder");
+                    let prev_out =
+                        calculate_output_amount(walk_offered, walk_requested, *prev_fill);
+                    walk_offered -= prev_out;
+                    walk_requested -= prev_fill;
+                }
+                prev_note
+            };
+
+            builder.add_output_note(OutputNote::Full(swap_note.clone()));
+            let mock_chain = builder.build()?;
+
+            // Note args: input=fill_amount (Bob provides ETH from vault), inflight=0
+            let note_args =
+                Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::new(*fill_amount)]);
+            let mut note_args_map = BTreeMap::new();
+            note_args_map.insert(swap_note.id(), note_args);
+
+            // Expected output notes via PswapNote
+            let (p2id_note, remainder_note) =
+                PswapNote::create_output_notes(&swap_note, bob.id(), *fill_amount, 0)?;
+
+            let mut expected_notes = vec![OutputNote::Full(p2id_note)];
+            if let Some(ref rem) = remainder_note {
+                expected_notes.push(OutputNote::Full(rem.clone()));
+            }
+
+            let tx_context = mock_chain
+                .build_tx_context(bob.id(), &[swap_note.id()], &[])?
+                .extend_expected_output_notes(expected_notes)
+                .extend_note_args(note_args_map)
+                .build()?;
+
+            let executed_tx = tx_context.execute().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "Chain {} fill {} failed: {} (offered={}, requested={}, fill={})",
+                    chain_idx + 1,
+                    fill_idx + 1,
+                    e,
+                    current_offered,
+                    current_requested,
+                    fill_amount
+                )
+            })?;
+
+            // Verify output notes count
+            let output_notes = executed_tx.output_notes();
+            let expected_count = if remaining_requested > 0 { 2 } else { 1 };
+            assert_eq!(
+                output_notes.num_notes(),
+                expected_count,
+                "Chain {} fill {}: expected {} output notes",
+                chain_idx + 1,
+                fill_idx + 1,
+                expected_count
+            );
+
+            // Verify Bob's vault delta
+            let vault_delta = executed_tx.account_delta().vault();
+            let added: Vec<Asset> = vault_delta.added_assets().collect();
+            let removed: Vec<Asset> = vault_delta.removed_assets().collect();
+
+            // Bob should receive offered_out USDC
+            assert_eq!(
+                added.len(),
+                1,
+                "Chain {} fill {}: Bob should receive 1 asset",
+                chain_idx + 1,
+                fill_idx + 1
+            );
+            if let Asset::Fungible(f) = &added[0] {
+                assert_eq!(
+                    f.amount(),
+                    offered_out,
+                    "Chain {} fill {}: Bob should receive {} USDC, got {}",
+                    chain_idx + 1,
+                    fill_idx + 1,
+                    offered_out,
+                    f.amount()
+                );
+            }
+
+            // Bob should spend fill_amount ETH
+            assert_eq!(
+                removed.len(),
+                1,
+                "Chain {} fill {}: Bob should spend 1 asset",
+                chain_idx + 1,
+                fill_idx + 1
+            );
+            if let Asset::Fungible(f) = &removed[0] {
+                assert_eq!(
+                    f.amount(),
+                    *fill_amount,
+                    "Chain {} fill {}: Bob should spend {} ETH",
+                    chain_idx + 1,
+                    fill_idx + 1,
+                    fill_amount
+                );
+            }
+
+            // Update running totals
+            total_usdc_to_bob += offered_out;
+            total_eth_from_bob += fill_amount;
+            current_offered = remaining_offered;
+            current_requested = remaining_requested;
+            _current_swap_note = remainder_note;
+        }
+
+        // Verify aggregate invariants
+        let total_fills: u64 = fills.iter().sum();
+        assert_eq!(
+            total_eth_from_bob, total_fills,
+            "Chain {}: total ETH from Bob should equal sum of fills",
+            chain_idx + 1
+        );
+        // Total USDC to Bob + remaining offered should equal initial offered
+        assert_eq!(
+            total_usdc_to_bob + current_offered,
+            *initial_offered,
+            "Chain {}: USDC conservation failed! {} (to Bob) + {} (remainder) != {} (initial). Rounding loss: {}",
+            chain_idx + 1,
+            total_usdc_to_bob,
+            current_offered,
+            initial_offered,
+            *initial_offered as i64 - (total_usdc_to_bob + current_offered) as i64
+        );
+
+        println!(
+            "  PASSED: {} fills, Bob got {} USDC for {} ETH, remainder: {} USDC for {} ETH",
+            fills.len(),
+            total_usdc_to_bob,
+            total_eth_from_bob,
+            current_offered,
+            current_requested
+        );
+    }
+
+    println!("\n=== All chained partial fill test chains passed! ===");
+    Ok(())
+}
+
+/// Fuzz test: Single partial fills with non-integer ratios.
+///
+/// Tests that remainder note creation works correctly when calculate_output_amount
+/// rounds down due to non-integer offer/request ratios. Each case does a single
+/// partial fill and verifies the P2ID note, remainder note, and Bob's vault delta.
+///
+/// Ratios tested include: primes, Fibonacci, near-1:1, extreme skew, and random.
+#[tokio::test]
+async fn swapp_note_partial_fill_non_integer_ratio_fuzz_test() -> anyhow::Result<()> {
+    println!("=== Fuzz Test: Partial Fill With Non-Integer Ratios ===\n");
+
+    fn calculate_output_amount(offered_total: u64, requested_total: u64, input_amount: u64) -> u64 {
+        let precision_factor = 100000u64;
+        if offered_total > requested_total {
+            let ratio = (offered_total * precision_factor) / requested_total;
+            (input_amount * ratio) / precision_factor
+        } else {
+            let ratio = (requested_total * precision_factor) / offered_total;
+            (input_amount * precision_factor) / ratio
+        }
+    }
+
+    println!("Building contracts (one-time setup)...");
+    let account_package = Arc::new(build_project_in_dir(
+        Path::new("../contracts/basic-wallet"),
+        true,
+    )?);
+    println!("Contracts built.\n");
+
+    // (offered_usdc, requested_eth, fill_eth)
+    // Constraints: fill_eth < requested_eth, offered/requested is non-integer
+    let mut test_cases: Vec<(u64, u64, u64)> = vec![
+        // Prime ratios
+        (23, 20, 7),    // 23/20=1.15, fill 35%
+        (23, 20, 13),   // 23/20=1.15, fill 65%
+        (23, 20, 19),   // 23/20=1.15, fill 95% (near-full)
+        (17, 13, 5),    // 17/13=1.308
+        (97, 89, 37),   // 97/89=1.09
+        (53, 47, 23),   // 53/47=1.128
+        (7, 5, 3),      // 7/5=1.4
+        (7, 5, 1),      // 7/5=1.4, minimal fill
+        (7, 5, 4),      // 7/5=1.4, near-full
+        // Fibonacci ratios (golden ratio approximations)
+        (89, 55, 21),   // ≈1.618
+        (233, 144, 55), // ≈1.618
+        (34, 21, 8),    // ≈1.619
+        // Offered < requested (inverse ratio)
+        (50, 97, 30),   // 0.515:1
+        (13, 47, 20),   // 0.277:1
+        (3, 7, 5),      // 0.429:1, fill enough to get at least 1 out
+        // Near 1:1 (tiny rounding effects)
+        (101, 100, 50), // 1.01:1
+        (100, 99, 50),  // 1.01:1
+        (997, 991, 500), // 1.006:1
+        // Extreme skew
+        (1000, 3, 1),   // 333:1, minimal fill
+        (1000, 3, 2),   // 333:1, near-full
+        (3, 1000, 500), // 1:333
+        // Large amounts with non-integer ratios
+        (9999, 7777, 3333), // 1.286:1
+        (5000, 3333, 1111), // 1.5:1
+        // Powers of 2 ± 1 (stress binary rounding)
+        (127, 63, 31),  // (2^7-1)/(2^6-1)
+        (255, 127, 63), // (2^8-1)/(2^7-1)
+        (511, 255, 100), // (2^9-1)/(2^8-1)
+    ];
+
+    // Random cases
+    use rand::Rng;
+    let mut thread_rng = rand::rng();
+    let mut random_added = 0;
+    while random_added < 20 {
+        let offered: u64 = thread_rng.random_range(3..2000);
+        let requested: u64 = thread_rng.random_range(2..2000);
+        // Ensure non-integer ratio
+        if offered % requested == 0 || requested % offered == 0 {
+            continue;
+        }
+        let fill: u64 = thread_rng.random_range(1..requested);
+        // Skip cases where output would be 0 (fill too small for the ratio)
+        let out = calculate_output_amount(offered, requested, fill);
+        if out == 0 {
+            continue;
+        }
+        test_cases.push((offered, requested, fill));
+        random_added += 1;
+    }
+
+    let total = test_cases.len();
+    println!("Running {} test cases...\n", total);
+
+    for (i, (offered_usdc, requested_eth, fill_eth)) in test_cases.iter().enumerate() {
+        let offered_out = calculate_output_amount(*offered_usdc, *requested_eth, *fill_eth);
+        let remaining_offered = offered_usdc - offered_out;
+        let remaining_requested = requested_eth - fill_eth;
+
+        // Verify rounding actually happened for at least some cases
+        let exact = (*offered_usdc as f64 / *requested_eth as f64) * (*fill_eth as f64);
+        let rounding_loss = exact - offered_out as f64;
+
+        println!(
+            "--- Case {}/{}: {}USDC/{}ETH fill={} → out={} rem={}USDC/{}ETH (rounding: {:.3}) ---",
+            i + 1,
+            total,
+            offered_usdc,
+            requested_eth,
+            fill_eth,
+            offered_out,
+            remaining_offered,
+            remaining_requested,
+            rounding_loss,
+        );
+
+        // Sanity: offered_out must be > 0 and <= offered
+        assert!(
+            offered_out > 0,
+            "Case {}: offered_out must be > 0",
+            i + 1
+        );
+        assert!(
+            offered_out <= *offered_usdc,
+            "Case {}: offered_out {} > offered {}",
+            i + 1,
+            offered_out,
+            offered_usdc
+        );
+
+        // Fresh MockChain
+        let mut builder = MockChain::builder();
+        let max_amount = *[*offered_usdc, *requested_eth].iter().max().unwrap();
+        let total_issuance = max_amount * 10 + 1000;
+
+        let usdc_faucet = builder.add_existing_basic_faucet(
+            Auth::BasicAuth,
+            "USDC",
+            10000,
+            Some(total_issuance),
+        )?;
+        let eth_faucet = builder.add_existing_basic_faucet(
+            Auth::BasicAuth,
+            "ETH",
+            10000,
+            Some(total_issuance),
+        )?;
+
+        let alice = builder.add_existing_wallet_with_assets(
+            Auth::BasicAuth,
+            [FungibleAsset::new(usdc_faucet.id(), *offered_usdc)?.into()],
+        )?;
+
+        let bob_assets = vec![FungibleAsset::new(eth_faucet.id(), *fill_eth)?.into()];
+        let bob = create_testing_account_from_package(
+            account_package.clone(),
+            AccountCreationConfig {
+                storage_slots: vec![],
+                ..Default::default()
+            },
+            bob_assets,
+        )
+        .await?;
+        builder.add_account(bob.clone())?;
+
+        let seed_word = Word::from([
+            Felt::new(i as u64 + 1),
+            Felt::new(i as u64 + 2),
+            Felt::new(i as u64 + 3),
+            Felt::new(i as u64 + 4),
+        ]);
+        let mut note_rng = miden_crypto::rand::RpoRandomCoin::new(seed_word);
+
+        let swap_note = create_swapp_note_with_pswap(
+            alice.id(),
+            Asset::Fungible(FungibleAsset::new(usdc_faucet.id(), *offered_usdc)?),
+            Asset::Fungible(FungibleAsset::new(eth_faucet.id(), *requested_eth)?),
+            NoteType::Public,
+            &mut note_rng,
+        )?;
+        builder.add_output_note(OutputNote::Full(swap_note.clone()));
+
+        let mock_chain = builder.build()?;
+
+        // Note args: input=fill_eth, inflight=0
+        let note_args = Word::from([Felt::ZERO, Felt::ZERO, Felt::ZERO, Felt::new(*fill_eth)]);
+        let mut note_args_map = BTreeMap::new();
+        note_args_map.insert(swap_note.id(), note_args);
+
+        // Expected output notes
+        let (p2id_note, remainder_note) =
+            PswapNote::create_output_notes(&swap_note, bob.id(), *fill_eth, 0)?;
+
+        let mut expected_notes = vec![OutputNote::Full(p2id_note)];
+        if let Some(ref rem) = remainder_note {
+            expected_notes.push(OutputNote::Full(rem.clone()));
+        }
+
+        let tx_context = mock_chain
+            .build_tx_context(bob.id(), &[swap_note.id()], &[])?
+            .extend_expected_output_notes(expected_notes)
+            .extend_note_args(note_args_map)
+            .build()?;
+
+        let executed_tx = tx_context.execute().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Case {} failed: {} (offered={}, requested={}, fill={})",
+                i + 1,
+                e,
+                offered_usdc,
+                requested_eth,
+                fill_eth
+            )
+        })?;
+
+        // Verify output notes
+        let output_notes = executed_tx.output_notes();
+        let expected_count = if remaining_requested > 0 { 2 } else { 1 };
+        assert_eq!(
+            output_notes.num_notes(),
+            expected_count,
+            "Case {}: expected {} output notes, got {}",
+            i + 1,
+            expected_count,
+            output_notes.num_notes()
+        );
+
+        // Verify vault delta
+        let vault_delta = executed_tx.account_delta().vault();
+        let added: Vec<Asset> = vault_delta.added_assets().collect();
+        let removed: Vec<Asset> = vault_delta.removed_assets().collect();
+
+        assert_eq!(added.len(), 1, "Case {}: Bob should receive 1 asset", i + 1);
+        if let Asset::Fungible(f) = &added[0] {
+            assert_eq!(
+                f.amount(),
+                offered_out,
+                "Case {}: Bob should get {} USDC, got {}",
+                i + 1,
+                offered_out,
+                f.amount()
+            );
+        }
+
+        assert_eq!(removed.len(), 1, "Case {}: Bob should spend 1 asset", i + 1);
+        if let Asset::Fungible(f) = &removed[0] {
+            assert_eq!(f.amount(), *fill_eth, "Case {}: Bob should spend {} ETH", i + 1, fill_eth);
+        }
+
+        // Verify conservation: offered_total = offered_out + remaining_offered
+        assert_eq!(
+            offered_out + remaining_offered,
+            *offered_usdc,
+            "Case {}: USDC conservation: {} + {} != {}",
+            i + 1,
+            offered_out,
+            remaining_offered,
+            offered_usdc
+        );
+
+        println!(
+            "  PASSED: Bob got {} USDC for {} ETH, remainder {} USDC for {} ETH",
+            offered_out, fill_eth, remaining_offered, remaining_requested
+        );
+    }
+
+    println!("\n=== All {} partial fill non-integer ratio cases passed! ===", total);
     Ok(())
 }

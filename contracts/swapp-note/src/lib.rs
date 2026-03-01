@@ -235,7 +235,7 @@ impl SwappNote {
         let total_offered_out = input_offered_out + inflight_offered_out;
 
         // Create remainder swap note in case of partial fill
-        if total_offered_out.as_u64() < offered_asset_total.as_u64() {
+        if total_input_amount.as_u64() < requested_asset_total.as_u64() {
             let remainder_serial = hash_words(&[current_note_serial]).inner;
             let remainder_aux = total_offered_out;
 
