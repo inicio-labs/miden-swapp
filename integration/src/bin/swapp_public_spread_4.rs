@@ -24,9 +24,9 @@ use rand::RngCore;
 use tokio::time::Duration;
 
 /// Public Spread Test (using miden_swapp::ConsumeAssetScript):
-/// - Alice offers 25 USDT for 20 ETH
-/// - Bob offers 20 ETH for 20 USDT
-/// - Solver consumes both via ConsumeAssetScript, earns 5 USDT spread
+/// - Alice offers 23 USDT for 20 ETH
+/// - Bob offers 20 ETH for 17 USDT
+/// - Solver consumes both via ConsumeAssetScript, earns 6 USDT spread
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -91,13 +91,13 @@ async fn main() -> Result<()> {
     client.sync_state().await?;
 
     //------------------------------------------------------------
-    // Alice creates swap note: 25 USDT for 20 ETH
+    // Alice creates swap note: 23 USDT for 20 ETH
     //------------------------------------------------------------
-    println!("[1] Alice creates swap note (25 USDT -> 20 ETH)");
+    println!("[1] Alice creates swap note (23 USDT -> 20 ETH)");
 
     let alice_swap_note = PswapNote::create(
         alice_id,
-        Asset::Fungible(FungibleAsset::new(faucet1_id, 25)?),
+        Asset::Fungible(FungibleAsset::new(faucet1_id, 23)?),
         Asset::Fungible(FungibleAsset::new(faucet2_id, 20)?),
         NoteType::Public,
         miden_protocol::note::NoteAttachment::default(),
@@ -117,14 +117,14 @@ async fn main() -> Result<()> {
     println!("Published. TX: {:?}", tx_id);
 
     //------------------------------------------------------------
-    // Bob creates swap note: 20 ETH for 20 USDT
+    // Bob creates swap note: 20 ETH for 17 USDT
     //------------------------------------------------------------
-    println!("\n[2] Bob creates swap note (20 ETH -> 20 USDT)");
+    println!("\n[2] Bob creates swap note (20 ETH -> 17 USDT)");
 
     let bob_swap_note = PswapNote::create(
         bob_id,
         Asset::Fungible(FungibleAsset::new(faucet2_id, 20)?),
-        Asset::Fungible(FungibleAsset::new(faucet1_id, 20)?),
+        Asset::Fungible(FungibleAsset::new(faucet1_id, 17)?),
         NoteType::Public,
         miden_protocol::note::NoteAttachment::default(),
         client.rng(),
@@ -164,21 +164,21 @@ async fn main() -> Result<()> {
     let bob_note_args = Word::from([
         Felt::ZERO,
         Felt::ZERO,
-        Felt::new(20), // inflight = 20 USDT
+        Felt::new(17), // inflight = 17 USDT
         Felt::ZERO,
     ]);
 
-    // P2ID for Alice (20 ETH) and Bob (20 USDT) via PswapNote
+    // P2ID for Alice (20 ETH) and Bob (18 USDT) via PswapNote
     let (alice_p2id_note, _) = PswapNote::create_output_notes(&alice_swap_note, solver_id, 0, 20)
         .map_err(|e| anyhow::anyhow!("Alice P2ID: {:?}", e))?;
 
-    let (bob_p2id_note, _) = PswapNote::create_output_notes(&bob_swap_note, solver_id, 0, 20)
+    let (bob_p2id_note, _) = PswapNote::create_output_notes(&bob_swap_note, solver_id, 0, 17)
         .map_err(|e| anyhow::anyhow!("Bob P2ID: {:?}", e))?;
 
     // Use ConsumeAssetScript to get the tx script and prepare the solver's spread note
     let tx_script = ConsumeAssetScript::tx_script();
 
-    let solver_spread_asset = Asset::Fungible(FungibleAsset::new(faucet1_id, 5)?);
+    let solver_spread_asset = Asset::Fungible(FungibleAsset::new(faucet1_id, 6)?);
     let data = ConsumeAssetScript::prepare(&[solver_spread_asset]);
 
     println!("Alice P2ID: {:?}", alice_p2id_note.id());
@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     //------------------------------------------------------------
     // Each party consumes their P2ID note
     //------------------------------------------------------------
-    // Solver's spread (5 USDT) was consumed directly into vault during the swap tx
+    // Solver's spread (6 USDT) was consumed directly into vault during the swap tx
 
     println!("\n[4] Alice consuming P2ID (20 ETH)");
     match client
@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_secs(5)).await;
     client.sync_state().await?;
 
-    println!("\n[5] Bob consuming P2ID (20 USDT)");
+    println!("\n[5] Bob consuming P2ID (17 USDT)");
     match client
         .submit_new_transaction(
             bob_id,
@@ -260,9 +260,9 @@ async fn main() -> Result<()> {
     }
 
     println!("\n=== Test Complete ===");
-    println!("Alice: 25 USDT -> 20 ETH");
-    println!("Bob: 20 ETH -> 20 USDT");
-    println!("Solver: 5 USDT spread profit (via ConsumeAssetScript)");
+    println!("Alice: 23 USDT -> 20 ETH");
+    println!("Bob: 20 ETH -> 17 USDT");
+    println!("Solver: 6 USDT spread profit (via ConsumeAssetScript)");
 
     Ok(())
 }
