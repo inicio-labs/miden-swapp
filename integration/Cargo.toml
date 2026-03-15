@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 miden = { workspace = true }
-miden-swapp = { path = ".." }
+miden-swapp = { path = "..", features = ["std"] }
 cargo-miden = "0.7.0"
 miden-client = { version = "0.13.1", features = ["tonic", "std"] }
 miden-client-sqlite-store = { version = "0.13.1"}
@@ -25,5 +25,9 @@ serde_json = "1.0"
 [[test]]
 name = "swapp_test"
 path = "tests/swapp_test.rs"
+
+[[test]]
+name = "pswap_test"
+path = "tests/pswap_test.rs"
 
 

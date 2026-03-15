@@ -1,5 +1,4 @@
-use miden_crypto::utils::Deserializable;
-use miden_mast_package::Package;
+use miden_core::crypto::hash::Rpo256;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::{Asset, FungibleAsset};
 use miden_protocol::crypto::rand::FeltRng;
@@ -10,25 +9,19 @@ use miden_protocol::note::{
 };
 use miden_protocol::utils::sync::LazyLock;
 use miden_protocol::{Felt, Word, ZERO};
+use miden_standards::code_builder::CodeBuilder;
 use miden_standards::note::utils::build_p2id_recipient;
 
-const PSWAP_NOTE_SCRIPT_BYTES: &[u8] = include_bytes!("../../contracts/swapp-note/swapp_note.masp");
+const PSWAP_MASM_SOURCE: &str = include_str!("../../asm/pswap.masm");
 
 // NOTE SCRIPT
 // ================================================================================================
 
-// Initialize the SWAPP note script only once by loading the embedded package
+// Initialize the SWAPP note script only once by compiling the MASM source
 static PSWAP_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
-    // Deserialize the package
-    let package = Package::read_from_bytes(PSWAP_NOTE_SCRIPT_BYTES)
-        .expect("Failed to deserialize swapp-note package");
-
-    // Extract the note script from the package
-    let note_program = package.unwrap_program();
-    NoteScript::from_parts(
-        note_program.mast_forest().clone(),
-        note_program.entrypoint(),
-    )
+    CodeBuilder::new()
+        .compile_note_script(PSWAP_MASM_SOURCE)
+        .expect("Failed to compile PSWAP.masm")
 });
 
 // PSWAP NOTE
@@ -49,12 +42,15 @@ impl PswapNote {
 
     /// Expected number of input items for the PSWAP note.
     ///
-    /// Layout (8 Felts):
+    /// Layout (14 Felts):
     /// - [0-3]: Requested asset (faucet_id_prefix, faucet_id_suffix, padding, amount)
-    /// - [4-5]: Creator account ID (prefix, suffix)
-    /// - [6]: Note type
-    /// - [7]: P2ID routing tag
-    pub const NUM_INPUT_ITEMS: usize = 8;
+    /// - [4]: SWAPp tag
+    /// - [5]: P2ID routing tag
+    /// - [6-7]: Reserved (zero)
+    /// - [8]: Swap count
+    /// - [9-11]: Reserved (zero)
+    /// - [12-13]: Creator account ID (prefix, suffix)
+    pub const NUM_INPUT_ITEMS: usize = 14;
 
     // PUBLIC ACCESSORS
     // --------------------------------------------------------------------------------------------
@@ -120,24 +116,29 @@ impl PswapNote {
             }
         };
 
-        // Build note inputs (8 Felts)
+        // Build note inputs (14 Felts)
+        let tag = Self::build_tag(note_type, &offered_asset, &requested_asset);
+        let swapp_tag_felt = Felt::new(u32::from(tag) as u64);
         let p2id_tag_felt = Self::compute_p2id_tag_felt(creator_account_id);
 
         let inputs = vec![
-            faucet_prefix, // requested_asset.faucet_id().prefix()
-            faucet_suffix, // requested_asset.faucet_id().suffix()
-            Felt::new(0),  // padding
-            amount,        // requested_asset.amount()
-            creator_account_id.prefix().as_felt(),
-            creator_account_id.suffix(),
-            note_type.into(),
-            p2id_tag_felt,
+            faucet_prefix,                         // [0] requested_asset.faucet_id().prefix()
+            faucet_suffix,                         // [1] requested_asset.faucet_id().suffix()
+            Felt::new(0),                          // [2] padding
+            amount,                                // [3] requested_asset.amount()
+            swapp_tag_felt,                        // [4] SWAPp tag
+            p2id_tag_felt,                         // [5] P2ID tag
+            ZERO,                                  // [6] reserved
+            ZERO,                                  // [7] reserved
+            ZERO,                                  // [8] swap_count (initially 0)
+            ZERO,                                  // [9] reserved
+            ZERO,                                  // [10] reserved
+            ZERO,                                  // [11] reserved
+            creator_account_id.prefix().as_felt(), // [12] creator prefix
+            creator_account_id.suffix(),           // [13] creator suffix
         ];
 
         let note_inputs = NoteInputs::new(inputs)?;
-
-        // Build the tag for the PSWAP use case
-        let tag = Self::build_tag(note_type, &offered_asset, &requested_asset);
 
         // Generate serial number
         let serial_num = rng.draw_word();
@@ -194,8 +195,10 @@ impl PswapNote {
     ) -> Result<(Note, Option<Note>), NoteError> {
         // Parse original note to extract creator and swap details
         let inputs = original_swap_note.recipient().inputs();
-        let (requested_asset_word, _creator_account_id, note_type, p2id_tag) =
+        let (requested_asset_word, _swapp_tag, p2id_tag, _swap_count, _creator_account_id) =
             Self::parse_inputs(inputs.values())?;
+        // Derive note_type from the original swap note's metadata (matches PSWAP.masm behavior)
+        let note_type = original_swap_note.metadata().note_type();
 
         // Use input_amount as the fill amount for this call
         let fill_amount = input_amount + inflight_amount;
@@ -315,16 +318,13 @@ impl PswapNote {
     ) -> Result<Note, NoteError> {
         // Parse original note inputs to get creator (P2ID target)
         let inputs = original_swap_note.recipient().inputs();
-        let (_, creator_account_id, _, _) = Self::parse_inputs(inputs.values())?;
+        let (_, _, _, swap_count, creator_account_id) = Self::parse_inputs(inputs.values())?;
 
-        // Generate serial number (typically: original serial_num + 1 for each element)
+        // Derive P2ID serial: hmerge(swap_count_word, original_serial) matching PSWAP.masm
+        let swap_count_word = Word::from([Felt::new(swap_count + 1), ZERO, ZERO, ZERO]);
         let original_serial = original_swap_note.recipient().serial_num();
-        let p2id_serial_num = Word::from([
-            original_serial[0] + Felt::new(1),
-            original_serial[1] + Felt::new(1),
-            original_serial[2] + Felt::new(1),
-            original_serial[3] + Felt::new(1),
-        ]);
+        let p2id_serial_digest = Rpo256::merge(&[swap_count_word.into(), original_serial.into()]);
+        let p2id_serial_num: Word = Word::from(p2id_serial_digest);
 
         // P2ID recipient is the creator (who receives the payback)
         let recipient = build_p2id_recipient(creator_account_id, p2id_serial_num)?;
@@ -368,36 +368,43 @@ impl PswapNote {
     ) -> Result<Note, NoteError> {
         // Parse original note inputs
         let original_inputs = original_swap_note.recipient().inputs();
-        let (requested_asset_word, creator_account_id, note_type, p2id_tag) =
+        let (requested_asset_word, swapp_tag, p2id_tag, swap_count, creator_account_id) =
             Self::parse_inputs(original_inputs.values())?;
+        let note_type = original_swap_note.metadata().note_type();
 
         // Extract faucet prefix/suffix directly from note input components
         let faucet_prefix = requested_asset_word[0];
         let faucet_suffix = requested_asset_word[1];
 
-        // Build new inputs with updated remaining amounts
-        let p2id_tag_felt = Felt::new(u32::from(p2id_tag) as u64);
-
+        // Build new inputs with updated remaining amounts and incremented swap_count
         let inputs = vec![
-            faucet_prefix,
-            faucet_suffix,
-            ZERO,
-            Felt::new(remaining_requested_amount), // Updated requested amount
-            creator_account_id.prefix().as_felt(),
-            creator_account_id.suffix(),
-            note_type.into(),
-            p2id_tag_felt,
+            faucet_prefix,                                  // [0]
+            faucet_suffix,                                  // [1]
+            ZERO,                                           // [2]
+            Felt::new(remaining_requested_amount),          // [3] updated requested amount
+            Felt::new(u32::from(swapp_tag) as u64),         // [4] swapp_tag (preserved)
+            Felt::new(u32::from(p2id_tag) as u64),          // [5] p2id_tag (preserved)
+            ZERO,                                           // [6]
+            ZERO,                                           // [7]
+            Felt::new(swap_count + 1),                      // [8] swap_count incremented
+            ZERO,                                           // [9]
+            ZERO,                                           // [10]
+            ZERO,                                           // [11]
+            creator_account_id.prefix().as_felt(),          // [12]
+            creator_account_id.suffix(),                    // [13]
         ];
 
         let note_inputs = NoteInputs::new(inputs)?;
 
-        let original_serial: [Felt; 4] = original_swap_note.recipient().serial_num().into();
-
-        // Build remainder note with same script
+        // Remainder serial: only serial[3] + 1 (matching PSWAP.masm)
+        let original_serial = original_swap_note.recipient().serial_num();
         let note_script = Self::script();
-        let remainder_serial_num: [Felt; 4] =
-            miden_core::crypto::hash::Rpo256::hash_elements(&original_serial).into();
-        let remainder_serial_num = Word::from(remainder_serial_num);
+        let remainder_serial_num = Word::from([
+            original_serial[0],
+            original_serial[1],
+            original_serial[2],
+            Felt::new(original_serial[3].as_int() + 1),
+        ]);
 
         let recipient = NoteRecipient::new(remainder_serial_num, note_script, note_inputs);
 
@@ -498,24 +505,25 @@ impl PswapNote {
     ///
     /// # Arguments
     ///
-    /// * `inputs` - The note inputs (must be exactly 8 Felts)
+    /// * `inputs` - The note inputs (must be exactly 14 Felts)
     ///
     /// # Returns
     ///
     /// Returns a tuple containing:
     /// - `requested_asset_word`: The requested asset as a Word
-    /// - `creator_account_id`: The account ID of the swap creator
-    /// - `note_type`: The note type for payback notes
+    /// - `swapp_tag`: The SWAPp note tag
     /// - `p2id_tag`: The tag for routing payback notes
+    /// - `swap_count`: The current swap count
+    /// - `creator_account_id`: The account ID of the swap creator
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - Input length is not 8
+    /// - Input length is not 14
     /// - Account ID construction fails
     pub fn parse_inputs(
         inputs: &[Felt],
-    ) -> Result<(Word, AccountId, NoteType, NoteTag), NoteError> {
+    ) -> Result<(Word, NoteTag, NoteTag, u64, AccountId), NoteError> {
         if inputs.len() != Self::NUM_INPUT_ITEMS {
             return Err(NoteError::other(alloc::format!(
                 "PSWAP note should have {} inputs, but {} were provided",
@@ -524,7 +532,7 @@ impl PswapNote {
             )));
         }
 
-        // Extract requested asset word
+        // inputs[0-3]: requested_asset_word
         let requested_asset_word = Word::from([
             inputs[0], // faucet_id_prefix
             inputs[1], // faucet_id_suffix
@@ -532,25 +540,27 @@ impl PswapNote {
             inputs[3], // amount
         ]);
 
-        // Extract creator account ID
-        let creator_prefix = inputs[4];
-        let creator_suffix = inputs[5];
+        // inputs[4]: swapp_tag
+        let swapp_tag = NoteTag::new(inputs[4].as_int() as u32);
+
+        // inputs[5]: p2id_tag
+        let p2id_tag = NoteTag::new(inputs[5].as_int() as u32);
+
+        // inputs[8]: swap_count
+        let swap_count = inputs[8].as_int();
+
+        // inputs[12-13]: creator_account_id
         let creator_account_id =
-            AccountId::try_from([creator_prefix, creator_suffix]).map_err(|e| {
+            AccountId::try_from([inputs[12], inputs[13]]).map_err(|e| {
                 NoteError::other(alloc::format!("Failed to parse creator account ID: {}", e))
             })?;
 
-        // Extract note type and tag
-        let note_type = NoteType::try_from(inputs[6].as_int() as u8)
-            .map_err(|e| NoteError::other(alloc::format!("Failed to parse note type: {}", e)))?;
-
-        let p2id_tag = NoteTag::new(inputs[7].as_int() as u32);
-
         Ok((
             requested_asset_word,
-            creator_account_id,
-            note_type,
+            swapp_tag,
             p2id_tag,
+            swap_count,
+            creator_account_id,
         ))
     }
 
@@ -564,7 +574,7 @@ impl PswapNote {
     ///
     /// Returns the requested `Asset`.
     pub fn get_requested_asset(inputs: &[Felt]) -> Result<Asset, NoteError> {
-        let (requested_asset_word, _, _, _) = Self::parse_inputs(inputs)?;
+        let (requested_asset_word, _, _, _, _) = Self::parse_inputs(inputs)?;
         // Reconstruct from components: [0]=prefix, [1]=suffix, [2]=0, [3]=amount
         let faucet_id = AccountId::try_from([requested_asset_word[0], requested_asset_word[1]])
             .map_err(|e| NoteError::other(alloc::format!("Failed to parse faucet ID: {}", e)))?;
@@ -585,7 +595,7 @@ impl PswapNote {
     ///
     /// Returns the creator's `AccountId`.
     pub fn get_creator_account_id(inputs: &[Felt]) -> Result<AccountId, NoteError> {
-        let (_, creator_account_id, _, _) = Self::parse_inputs(inputs)?;
+        let (_, _, _, _, creator_account_id) = Self::parse_inputs(inputs)?;
         Ok(creator_account_id)
     }
 
@@ -844,29 +854,37 @@ mod tests {
 
         let requested_asset_word: Word = requested_asset.into();
 
-        let note_type = NoteType::Public;
         let p2id_tag = NoteTag::with_account_target(creator_id);
         let p2id_tag_felt = Felt::new(u32::from(p2id_tag) as u64);
+        let swapp_tag = NoteTag::new(0x12345678);
+        let swapp_tag_felt = Felt::new(u32::from(swapp_tag) as u64);
 
         let inputs = vec![
-            requested_asset_word[0],
-            requested_asset_word[1],
-            ZERO,
-            requested_asset_word[3],
-            creator_id.prefix().as_felt(),
-            creator_id.suffix(),
-            note_type.into(),
-            p2id_tag_felt,
+            requested_asset_word[0],           // [0]
+            requested_asset_word[1],           // [1]
+            ZERO,                              // [2]
+            requested_asset_word[3],           // [3]
+            swapp_tag_felt,                    // [4] swapp_tag
+            p2id_tag_felt,                     // [5] p2id_tag
+            ZERO,                              // [6]
+            ZERO,                              // [7]
+            ZERO,                              // [8] swap_count
+            ZERO,                              // [9]
+            ZERO,                              // [10]
+            ZERO,                              // [11]
+            creator_id.prefix().as_felt(),     // [12]
+            creator_id.suffix(),               // [13]
         ];
 
         // Parse and verify
-        let (parsed_asset_word, parsed_creator, parsed_note_type, parsed_tag) =
+        let (parsed_asset_word, parsed_swapp_tag, parsed_p2id_tag, parsed_swap_count, parsed_creator) =
             PswapNote::parse_inputs(&inputs).unwrap();
 
         assert_eq!(parsed_asset_word, requested_asset_word);
+        assert_eq!(parsed_swapp_tag, swapp_tag);
+        assert_eq!(parsed_p2id_tag, p2id_tag);
+        assert_eq!(parsed_swap_count, 0);
         assert_eq!(parsed_creator, creator_id);
-        assert_eq!(parsed_note_type, note_type);
-        assert_eq!(parsed_tag, p2id_tag);
     }
 
     #[test]
@@ -1170,13 +1188,14 @@ mod tests {
         );
 
         // The P2ID recipient digest must match one built for Alice (creator).
+        // P2ID serial = hmerge(swap_count_word, original_serial) matching PSWAP.masm
         let original_serial = swap_note.recipient().serial_num();
-        let p2id_serial = Word::from([
-            original_serial[0] + Felt::new(1),
-            original_serial[1] + Felt::new(1),
-            original_serial[2] + Felt::new(1),
-            original_serial[3] + Felt::new(1),
-        ]);
+        let (_, _, _, swap_count, _) =
+            PswapNote::parse_inputs(swap_note.recipient().inputs().values()).unwrap();
+        let swap_count_word = Word::from([Felt::new(swap_count + 1), ZERO, ZERO, ZERO]);
+        let p2id_serial_digest =
+            miden_core::crypto::hash::Rpo256::merge(&[swap_count_word.into(), original_serial.into()]);
+        let p2id_serial: Word = Word::from(p2id_serial_digest);
         let expected_recipient =
             miden_standards::note::utils::build_p2id_recipient(f.alice_id, p2id_serial).unwrap();
 
@@ -1300,20 +1319,15 @@ mod tests {
             PswapNote::create_output_notes(&swap_note, f.bob_id, 15, 0).unwrap();
 
         let remainder = remainder_note.unwrap();
-        let (_, creator_in_remainder, note_type, _) =
+        let (_, _swapp_tag, _p2id_tag, _swap_count, creator_in_remainder) =
             PswapNote::parse_inputs(remainder.recipient().inputs().values()).unwrap();
 
         assert_eq!(
             creator_in_remainder, f.alice_id,
             "Remainder inputs should preserve Alice as the creator"
         );
-        assert_eq!(
-            note_type,
-            NoteType::Public,
-            "Remainder should preserve original note type"
-        );
 
-        println!("✅ Remainder note inputs preserve creator (Alice) and note type");
+        println!("✅ Remainder note inputs preserve creator (Alice)");
     }
 
     #[test]
@@ -1367,9 +1381,9 @@ mod tests {
     }
 
     #[test]
-    fn test_remainder_serial_num_is_hash_of_original() {
-        // Validates that the remainder serial number is derived by hashing
-        // the original serial number.
+    fn test_remainder_serial_num_derived_from_original() {
+        // Validates that the remainder serial number is derived by incrementing
+        // serial[3] by 1 (matching PSWAP.masm).
         let f = TestFixture::new();
         let swap_note = f.create_swap_note(50, 25);
 
@@ -1378,18 +1392,21 @@ mod tests {
 
         let remainder = remainder_note.unwrap();
 
-        let original_serial: [Felt; 4] = swap_note.recipient().serial_num().into();
-        let expected_serial: [Felt; 4] =
-            miden_core::crypto::hash::Rpo256::hash_elements(&original_serial).into();
-        let expected_serial = Word::from(expected_serial);
+        let original_serial = swap_note.recipient().serial_num();
+        let expected_serial = Word::from([
+            original_serial[0],
+            original_serial[1],
+            original_serial[2],
+            Felt::new(original_serial[3].as_int() + 1),
+        ]);
 
         assert_eq!(
             remainder.recipient().serial_num(),
             expected_serial,
-            "Remainder serial num should be RPO hash of original serial"
+            "Remainder serial num should be original with serial[3] + 1"
         );
 
-        println!("✅ Remainder serial number derived correctly via RPO hash");
+        println!("✅ Remainder serial number derived correctly via serial[3] + 1");
     }
 
     #[test]

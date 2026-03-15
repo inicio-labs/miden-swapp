@@ -206,10 +206,6 @@ async fn main() -> Result<()> {
         .script_arg(data.commitment_arg)
         .extend_advice_map([data.advice_map_entry])
         .expected_future_notes(expected_future_notes)
-        .expected_output_recipients(vec![
-            alice_p2id_note.recipient().clone(),
-            bob_p2id_note.recipient().clone(),
-        ])
         .build()
         .context("Failed to build consume transaction")?;
 

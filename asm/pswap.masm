@@ -1,0 +1,603 @@
+use miden::protocol::active_note
+use miden::protocol::output_note
+use miden::protocol::note
+use miden::standards::wallets::basic->wallet
+use miden::core::sys
+use miden::protocol::active_account
+use miden::core::math::u64
+
+# CONSTANTS
+# =================================================================================================
+
+const NOTE_TYPE_MASK=0x03
+const FACTOR=0x000186A0 # 1e5
+const MAX_U32=0x0000000100000000
+
+# Memory Addresses
+# =================================================================================================
+
+# Memory Address Layout:
+# - PSWAP Note Inputs: General input addresses (0 - 0xD)
+# - Price Calculation Procedure: Addresses 41 to 60 (0x28 to 0x36)
+# - TokenId Addresses: Addresses 60 to 70 (0x2D to 0x30)
+# - Full Word Addresses: Addresses 80 to 120, must be divisible by 4 (0x50 to 0x64)
+
+# PSWAP Note Inputs (0 to 40)
+const REQUESTED_ASSET_WORD_INPUT = 0x0000
+const REQUESTED_ASSET_INPUT_3 = 0x0003
+const SWAPP_TAG_INPUT = 0x0004
+const P2ID_TAG_INPUT = 0x0005
+const SWAPP_COUNT_INPUT = 0x0008
+const SWAPP_CREATOR_PREFIX_INPUT = 0x000C
+const SWAPP_CREATOR_SUFFIX_INPUT = 0x000D
+
+# Memory Addresses for Price Calculation Procedure (41 to 60)
+const AMT_OFFERED = 0x0028
+const AMT_REQUESTED = 0x0029
+const AMT_REQUESTED_IN = 0x002A
+const AMT_OFFERED_OUT= 0x002B
+const CALC_AMT_IN = 0x0031
+
+# Inflight and split calculation addresses
+const AMT_REQUESTED_INFLIGHT = 0x0033
+const AMT_OFFERED_OUT_INPUT = 0x0034
+const AMT_OFFERED_OUT_INFLIGHT = 0x0036
+
+# TokenId Memory Addresses (60 to 70)
+# TOKEN_OFFERED_* refers to the offered token (offered_asset)
+# TOKEN_REQUESTED_* refers to the requested token (requested_asset)
+const TOKEN_OFFERED_ID_PREFIX = 0x002D
+const TOKEN_OFFERED_ID_SUFFIX = 0x002E
+const TOKEN_REQUESTED_ID_PREFIX = 0x002F
+const TOKEN_REQUESTED_ID_SUFFIX = 0x0030
+
+# Full Word Memory Addresses (80 to 120, must be divisible by 4)
+const OFFERED_ASSET_WORD = 0x0064
+
+# Temporary Memory Addresses
+
+const NOTE_TYPE = 0x0084
+const NEW_ASSET_A = 0x0078
+const P2ID_NOTE_IDX = 0x007C
+const SWAPP_NOTE_IDX = 0x0080
+
+# ERRORS
+# =================================================================================================
+
+# SWAP script expects exactly 14 note inputs
+const ERR_SWAP_WRONG_NUMBER_OF_INPUTS="PSWAP wrong number of inputs"
+
+# SWAP script requires exactly one note asset
+const ERR_SWAP_WRONG_NUMBER_OF_ASSETS="PSWAP wrong number of assets"
+
+# PRICE CALCULATION
+# =================================================================================================
+
+#! Returns the amount of tokens_offered out given an amount of tokens_requested
+#!
+#! Inputs: [tokens_offered, tokens_requested, tokens_requested_in]
+#! Outputs: [tokens_offered_out]
+#!
+proc calculate_tokens_offered_for_requested
+    # Inputs: [offered, requested, input]
+    # Output: [offered_out]
+    #
+    # gt: pops b (top), a (second), pushes a > b
+    # u64::div: [b_hi, b_lo, a_hi, a_lo] => [q_hi, q_lo, r_hi, r_lo] where q = a/b
+    # u64::wrapping_mul: [b_hi, b_lo, a_hi, a_lo] => [res_hi, res_lo] where res = a*b
+
+    movup.2 mem_store.CALC_AMT_IN
+    # => [offered, requested]
+
+    dup.1 dup.1
+    # => [offered, requested, offered, requested]
+
+    gt
+    # => [req > off, offered, requested]
+
+    if.true
+        # Case: requested > offered
+        # ratio  = (requested * FACTOR) / offered
+        # result = (input * FACTOR) / ratio
+
+        swap
+        # => [requested, offered]
+
+        u32split push.FACTOR u32split
+        # => [F_hi, F_lo, req_hi, req_lo, offered]
+
+        exec.u64::wrapping_mul
+        # => [(req*F)_hi, (req*F)_lo, offered]
+
+        movup.2 u32split
+        # => [off_hi, off_lo, (req*F)_hi, (req*F)_lo]
+
+        exec.u64::div
+        # => [ratio_hi, ratio_lo, rem_hi, rem_lo]
+
+        push.MAX_U32 mul add
+        # => [ratio, rem_hi, rem_lo]
+
+        movdn.2 drop drop
+        # => [ratio]
+
+        mem_load.CALC_AMT_IN u32split push.FACTOR u32split
+        # => [F_hi, F_lo, in_hi, in_lo, ratio]
+
+        exec.u64::wrapping_mul
+        # => [(in*F)_hi, (in*F)_lo, ratio]
+
+        movup.2 u32split
+        # => [rat_hi, rat_lo, (in*F)_hi, (in*F)_lo]
+
+        exec.u64::div
+        # => [q_hi, q_lo, rem_hi, rem_lo]
+
+        push.MAX_U32 mul add
+        # => [result, rem_hi, rem_lo]
+
+        movdn.2 drop drop
+        # => [result]
+
+    else
+        # Case: offered >= requested
+        # result = ((offered * FACTOR / requested) * input) / FACTOR
+
+        u32split push.FACTOR u32split
+        # => [F_hi, F_lo, off_hi, off_lo, requested]
+
+        exec.u64::wrapping_mul
+        # => [(off*F)_hi, (off*F)_lo, requested]
+
+        movup.2 u32split
+        # => [req_hi, req_lo, (off*F)_hi, (off*F)_lo]
+
+        exec.u64::div
+        # => [ratio_hi, ratio_lo, rem_hi, rem_lo]
+
+        movup.3 drop movup.2 drop
+        # => [ratio_hi, ratio_lo]
+
+        mem_load.CALC_AMT_IN u32split
+        # => [in_hi, in_lo, ratio_hi, ratio_lo]
+
+        exec.u64::wrapping_mul
+        # => [(rat*in)_hi, (rat*in)_lo]
+
+        push.FACTOR u32split
+        # => [F_hi, F_lo, (rat*in)_hi, (rat*in)_lo]
+
+        exec.u64::div
+        # => [q_hi, q_lo, rem_hi, rem_lo]
+
+        push.MAX_U32 mul add
+        # => [result, rem_hi, rem_lo]
+
+        movdn.2 drop drop
+        # => [result]
+
+    end
+end
+
+# METADATA PROCEDURES
+# =================================================================================================
+
+#! Extracts the note_type from the active note's metadata and stores it at NOTE_TYPE.
+#!
+#! Metadata layout: [NOTE_ATTACHMENT(4), METADATA_HEADER(4)]
+#! METADATA_HEADER[0] = sender_suffix_and_note_type (note_type in bits 0-1)
+#!
+#! Inputs: []
+#! Outputs: []
+#!
+proc extract_note_type
+    exec.active_note::get_metadata
+    # => [NOTE_ATTACHMENT(4), METADATA_HEADER(4)]
+    dropw
+    # => [METADATA_HEADER] = [hdr3, hdr2, hdr1, hdr0]
+    drop drop drop
+    # => [hdr0 = sender_suffix_and_note_type]
+    u32split drop
+    # => [lo32]  (note_type in bits 0-1)
+    push.NOTE_TYPE_MASK u32and
+    # => [note_type]
+    mem_store.NOTE_TYPE
+    # => []
+end
+
+# HASHING PROCEDURES
+# =================================================================================================
+
+#! Returns the P2ID RECIPIENT for a specified SERIAL_NUM, SCRIPT_ROOT, and account_id
+#!
+#! Inputs: [SERIAL_NUM, SCRIPT_ROOT]
+#! Outputs: [P2ID_RECIPIENT]
+#!
+proc build_p2id_recipient_hash
+    # Inputs: [SERIAL_NUM, SCRIPT_ROOT]
+    # Outputs: [P2ID_RECIPIENT]
+    #
+    # Computes P2ID recipient using note::build_recipient.
+    # P2ID inputs are [suffix, prefix] (2 elements), matching build_p2id_recipient in Rust.
+
+    # Store P2ID inputs [suffix, prefix] at word-aligned address 4000
+    mem_load.SWAPP_CREATOR_SUFFIX_INPUT mem_store.4000
+    mem_load.SWAPP_CREATOR_PREFIX_INPUT mem_store.4001
+    # => [SERIAL_NUM, SCRIPT_ROOT]
+
+    # note::build_recipient: [inputs_ptr, num_inputs, SERIAL_NUM, SCRIPT_ROOT] => [RECIPIENT]
+    push.2.4000
+    # => [inputs_ptr=4000, num_inputs=2, SERIAL_NUM, SCRIPT_ROOT]
+
+    exec.note::build_recipient
+    # => [P2ID_RECIPIENT]
+end
+
+# P2ID NOTE CREATION PROCEDURE
+# =================================================================================================
+
+#! Creates a P2ID output note for the swap creator.
+#! Computes recipient, creates note, sets attachment, and adds assets.
+#!
+#! Inputs: []
+#! Outputs: []
+#!
+proc create_p2id_note
+    # 1. Load P2ID script root
+    push.13362761878458161062.15090726097241769395.444910447169617901.3558201871398422326
+    # => [P2ID_SCRIPT_ROOT]
+
+    # 2. Increment swap count
+    mem_load.SWAPP_COUNT_INPUT add.1 mem_store.SWAPP_COUNT_INPUT
+    # => [P2ID_SCRIPT_ROOT]
+
+    # 3. Load swap count word from memory
+    padw mem_loadw_be.SWAPP_COUNT_INPUT
+    # => [SWAP_COUNT, P2ID_SCRIPT_ROOT]
+
+    # 4. Get serial number from active note
+    exec.active_note::get_serial_number
+    # => [SERIAL_NUM, SWAP_COUNT, P2ID_SCRIPT_ROOT]
+
+    # 5. Derive P2ID serial: swapw then hmerge
+    swapw
+    # => [SWAP_COUNT, SERIAL_NUM, P2ID_SCRIPT_ROOT]
+    hmerge
+    # => [P2ID_SERIAL_NUM, P2ID_SCRIPT_ROOT]
+
+    # 6. Build P2ID recipient
+    exec.build_p2id_recipient_hash
+    # => [P2ID_RECIPIENT]
+
+    # 7. Create output note (note_type derived from active note metadata)
+    mem_load.NOTE_TYPE
+    # => [note_type, P2ID_RECIPIENT]
+
+    mem_load.P2ID_TAG_INPUT
+    # => [tag, note_type, RECIPIENT]
+
+    call.output_note::create
+    # => [note_idx, pad(15) ...]
+
+    mem_store.P2ID_NOTE_IDX
+    # => [pad(15) ...]
+
+    dropw dropw dropw drop drop drop
+    # => []
+
+    # 8. Set aux attachment: aux = input_amount + inflight_amount
+    mem_load.AMT_REQUESTED_IN mem_load.AMT_REQUESTED_INFLIGHT add
+    push.0.0.0
+    # => [0, 0, 0, aux]
+
+    push.0 mem_load.P2ID_NOTE_IDX
+    # => [note_idx, attachment_scheme, ATTACHMENT]
+
+    exec.output_note::set_word_attachment
+    # => []
+
+    # 9. Move input_amount from vault to P2ID note (if > 0)
+    mem_load.AMT_REQUESTED_IN dup push.0 neq
+    if.true
+        push.0
+        mem_load.TOKEN_REQUESTED_ID_SUFFIX
+        mem_load.TOKEN_REQUESTED_ID_PREFIX
+        # => [ASSET]
+
+        mem_load.P2ID_NOTE_IDX
+        # => [note_idx, ASSET]
+
+        movdn.4
+        # => [ASSET, note_idx]
+
+        call.wallet::move_asset_to_note
+        # => [ASSET, note_idx, pad(11)]
+
+        dropw drop
+        # => []
+    else
+        drop
+    end
+
+    # 10. Add inflight_amount directly to P2ID note (no vault debit, if > 0)
+    mem_load.AMT_REQUESTED_INFLIGHT dup push.0 neq
+    if.true
+        push.0
+        mem_load.TOKEN_REQUESTED_ID_SUFFIX
+        mem_load.TOKEN_REQUESTED_ID_PREFIX
+        # => [ASSET]
+
+        mem_load.P2ID_NOTE_IDX
+        # => [note_idx, ASSET]
+
+        movdn.4
+        # => [ASSET, note_idx]
+
+        exec.output_note::add_asset
+        # => []
+    else
+        drop
+    end
+end
+
+# REMAINDER NOTE CREATION PROCEDURE
+# =================================================================================================
+
+#! Creates a SWAPp remainder output note for partial fills.
+#! Updates the requested amount in inputs, builds a new recipient, creates the note,
+#! sets attachment, and adds the remaining offered asset.
+#!
+#! Assumes remaining_requested is already stored at REQUESTED_ASSET_INPUT_3.
+#!
+#! Inputs: []
+#! Outputs: []
+#!
+proc create_remainder_note
+    # Build SWAPp remainder recipient using build_recipient
+    exec.active_note::get_script_root
+    # => [SCRIPT_ROOT]
+
+    exec.active_note::get_serial_number add.1
+    # => [SERIAL_NUM, SCRIPT_ROOT]
+
+    push.14.0
+    # => [inputs_ptr=0, num_inputs=14, SERIAL_NUM, SCRIPT_ROOT]
+
+    exec.note::build_recipient
+    # => [RECIPIENT_SWAPP]
+
+    mem_load.NOTE_TYPE
+    mem_load.SWAPP_TAG_INPUT
+
+    # remainder offered asset
+    mem_load.AMT_OFFERED mem_load.AMT_OFFERED_OUT sub
+    push.0
+    mem_load.TOKEN_OFFERED_ID_SUFFIX
+    mem_load.TOKEN_OFFERED_ID_PREFIX
+    # => [ASSET, tag, note_type, SWAPp_RECIPIENT]
+
+    mem_storew_be.NEW_ASSET_A dropw
+
+    call.output_note::create
+    # => [note_idx, pad(15)]
+
+    mem_store.SWAPP_NOTE_IDX
+    dropw dropw dropw drop drop drop
+    # => []
+
+    # Set attachment: aux = offered_out amount
+    mem_load.AMT_OFFERED_OUT push.0.0.0
+    # => [0, 0, 0, aux]
+
+    push.0 mem_load.SWAPP_NOTE_IDX
+    # => [note_idx, attachment_scheme, ATTACHMENT]
+
+    exec.output_note::set_word_attachment
+    # => []
+
+    # Add remainder asset directly to SWAPp note (no vault roundtrip)
+    mem_loadw_be.NEW_ASSET_A
+    mem_load.SWAPP_NOTE_IDX
+    movdn.4
+    # => [ASSET, note_idx]
+
+    exec.output_note::add_asset
+    # => []
+end
+
+#! Returns if the currently consuming account is the creator of the note
+#!
+#! Inputs: []
+#! Outputs: [is_creator]
+#!
+proc is_consumer_is_creator
+    # Note inputs already loaded to memory by caller
+    exec.active_account::get_id
+    # => [acct_id_prefix, acct_id_suffix]
+
+    mem_load.SWAPP_CREATOR_SUFFIX_INPUT mem_load.SWAPP_CREATOR_PREFIX_INPUT
+    # => [acct_id_prefix_input, acct_id_suffix_input, acct_id_prefix, acct_id_suffix]
+
+    movup.2 eq
+    # => [prefix_eq, acct_id_suffix_input, acct_id_suffix]
+
+    movdn.2
+    # => [acct_id_suffix_input, acct_id_suffix, prefix_eq]
+
+    eq
+    # => [suffix_eq, prefix_eq]
+
+    and
+    # => [is_creator]
+end
+
+#! Sends Assets in Note to Consuming Account
+#!
+#! Inputs: []
+#! Outputs: []
+#!
+proc handle_reclaim
+    push.0 exec.active_note::get_assets
+
+    mem_loadw_be.0
+
+    call.wallet::receive_asset
+
+    dropw
+end
+
+# PSWAP EXECUTION
+# =================================================================================================
+#
+# Executes the partially-fillable swap. Sends offered tokens to consumer, requested tokens
+# to creator via P2ID, and creates a remainder note if partially filled.
+#
+# Note args: [input_amount, inflight_amount, 0, 0]
+#   - input_amount: debited from consumer's vault
+#   - inflight_amount: added directly (no vault debit)
+#
+
+# => []
+proc execute_pswap
+    push.OFFERED_ASSET_WORD exec.active_note::get_assets assert.err=ERR_SWAP_WRONG_NUMBER_OF_ASSETS drop
+    # => []
+
+    mem_loadw_be.OFFERED_ASSET_WORD
+    # [prefix,suffix,0, amount]
+
+    mem_store.TOKEN_OFFERED_ID_PREFIX
+    # => [suffix, 0, amount]
+
+    mem_store.TOKEN_OFFERED_ID_SUFFIX
+    # => [0, amount]
+
+    drop
+    # => [amount]
+
+    mem_store.AMT_OFFERED
+    # => []
+
+    mem_loadw_be.REQUESTED_ASSET_WORD_INPUT
+    # => [REQUESTED_ASSET]
+    # = [amount, 0, suffix, prefix]
+
+    mem_store.AMT_REQUESTED
+    # => [0, suffix, prefix]
+
+    drop
+    # => [suffix, prefix]
+
+    mem_store.TOKEN_REQUESTED_ID_SUFFIX
+    # => [prefix]
+
+    mem_store.TOKEN_REQUESTED_ID_PREFIX
+    # => []
+
+    # Calculate offered_out for input_amount
+    mem_load.AMT_REQUESTED_IN
+    mem_load.AMT_REQUESTED 
+    mem_load.AMT_OFFERED
+    # => [token_offered_AMT, token_requested_AMT, token_requested_in]
+    exec.calculate_tokens_offered_for_requested
+    # => [input_offered_out]
+    mem_store.AMT_OFFERED_OUT_INPUT
+    # => []
+
+    # Calculate offered_out for inflight_amount
+    mem_load.AMT_REQUESTED_INFLIGHT
+    mem_load.AMT_REQUESTED 
+    mem_load.AMT_OFFERED
+    # => [token_offered_AMT, token_requested_AMT, token_requested_inflight]
+    
+    exec.calculate_tokens_offered_for_requested
+    # => [inflight_offered_out]
+    mem_store.AMT_OFFERED_OUT_INFLIGHT
+    # => []
+
+    # total_offered_out = input_offered_out + inflight_offered_out
+    mem_load.AMT_OFFERED_OUT_INPUT mem_load.AMT_OFFERED_OUT_INFLIGHT add
+    # => [total_offered_out]
+
+    # store total_offered_out
+    mem_store.AMT_OFFERED_OUT
+    # => []
+
+    # 1) Create P2ID note for creator with token_requested (input + inflight)
+    # 2) Consumer receives token_offered_out (input portion only, from vault)
+    # If Partial Fill:
+    # 3) Create SWAPp' remainder note
+
+    # Create P2ID note (recipient, output note, attachment, assets)
+    exec.create_p2id_note
+    # => []
+
+    # Consumer receives input_offered_out into vault
+    mem_load.AMT_OFFERED_OUT_INPUT
+    push.0
+    mem_load.TOKEN_OFFERED_ID_SUFFIX
+    mem_load.TOKEN_OFFERED_ID_PREFIX
+    # => [ASSET]
+
+    call.wallet::receive_asset
+    # => []
+
+    # Check if partial fill: total_in < total_requested
+    mem_load.AMT_REQUESTED_IN mem_load.AMT_REQUESTED_INFLIGHT add
+    # => [total_in]
+
+    mem_load.AMT_REQUESTED
+    # => [total_requested, total_in]
+
+    dup.1 dup.1 lt
+    # => [total_in < total_requested, total_requested, total_in]
+
+    if.true
+        # remaining_requested = total_requested - total_in
+        swap sub
+        mem_store.REQUESTED_ASSET_INPUT_3
+
+        exec.create_remainder_note
+    else
+        drop drop
+    end
+
+    # clean stack
+    exec.sys::truncate_stack
+end
+
+begin
+    # => [NOTE_ARGS]
+    # Stack: [input_amount, inflight_amount, 0, 0]
+
+    mem_store.AMT_REQUESTED_IN      
+    # Stack: [inflight_amount, 0, 0]
+
+    mem_store.AMT_REQUESTED_INFLIGHT 
+    # Stack: [inflight_amount, 0, 0]  
+    drop drop                       
+    # => []
+
+    # Load note inputs once for all paths
+    push.0 exec.active_note::get_inputs
+    # => [num_inputs, inputs_ptr]
+
+    eq.14 assert.err=ERR_SWAP_WRONG_NUMBER_OF_INPUTS
+    # => [inputs_ptr]
+
+    drop
+    # => []
+
+    # Extract and store note_type from active note metadata
+    exec.extract_note_type
+    # => []
+
+    exec.is_consumer_is_creator
+    # => [is_creator]
+
+    if.true
+        exec.handle_reclaim
+    else
+        exec.execute_pswap
+    end
+
+end
