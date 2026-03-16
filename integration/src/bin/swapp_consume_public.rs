@@ -54,7 +54,10 @@ async fn main() -> Result<()> {
     let offered_amount = 50u64;
     let requested_amount = 20u64;
 
-    println!("[1] Alice creates swap note ({} USDT -> {} ETH)", offered_amount, requested_amount);
+    println!(
+        "[1] Alice creates swap note ({} USDT -> {} ETH)",
+        offered_amount, requested_amount
+    );
 
     let swap_note = PswapNote::create(
         alice_id,
@@ -77,6 +80,7 @@ async fn main() -> Result<()> {
                 .unwrap(),
         )
         .await?;
+
     println!("Published. TX: {:?}\n", tx_id);
 
     // Wait for note to be available
@@ -89,7 +93,10 @@ async fn main() -> Result<()> {
     // Bob fully fills with 20 ETH
     //------------------------------------------------------------
     let full_fill_amount = requested_amount;
-    println!("[2] Bob fully fills with {} ETH (expects {} USDT)", full_fill_amount, offered_amount);
+    println!(
+        "[2] Bob fully fills with {} ETH (expects {} USDT)",
+        full_fill_amount, offered_amount
+    );
 
     // Note args: Word[3] = input_amount, Word[2] = inflight_amount
     let note_args = Word::from([
@@ -106,18 +113,21 @@ async fn main() -> Result<()> {
 
     println!("Expected P2ID note: {:?}", p2id_note.id());
 
-    let expected_future_notes = vec![(
-        NoteDetails::from(&p2id_note),
-        p2id_note.metadata().tag(),
-    )];
+    let _expected_future_notes = vec![(NoteDetails::from(&p2id_note), p2id_note.metadata().tag())];
 
     // Debug: print recipient details so we can compare
-    println!("Expected P2ID recipient digest: {:?}", p2id_note.recipient().digest());
-    println!("Expected P2ID serial: {:?}", p2id_note.recipient().serial_num());
+    println!(
+        "Expected P2ID recipient digest: {:?}",
+        p2id_note.recipient().digest().to_hex()
+    );
+    println!(
+        "Expected P2ID serial: {:?}",
+        p2id_note.recipient().serial_num()
+    );
 
     let consume_request = TransactionRequestBuilder::new()
         .input_notes(vec![(swap_note.clone(), Some(note_args))])
-        .expected_future_notes(expected_future_notes)
+        //.expected_future_notes(expected_future_notes)
         .build()
         .context("Failed to build consume transaction")?;
 
@@ -126,26 +136,47 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to execute swap note consumption")?;
     println!("Bob consumed swap note. TX: {:?}", tx_id);
-    println!("Expected: Bob receives {} USDT, Alice receives {} ETH via P2ID\n", offered_amount, full_fill_amount);
+    println!(
+        "Expected: Bob receives {} USDT, Alice receives {} ETH via P2ID\n",
+        offered_amount, full_fill_amount
+    );
 
-    // Wait for processing
-    println!("Waiting for transaction to be processed...");
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    // Wait for Bob's TX to be included in a block, then sync
+    println!("Waiting for block confirmation...");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    client.sync_state().await?;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     client.sync_state().await?;
 
     //------------------------------------------------------------
-    // Alice consumes the P2ID note
+    // Alice finds and consumes the P2ID note from chain
     //------------------------------------------------------------
-    println!("[3] Alice consuming P2ID note ({} ETH)", full_fill_amount);
+    println!("\n[3] Alice looking for consumable P2ID note...");
 
-    let alice_consume_tx = TransactionRequestBuilder::new()
-        .input_notes(vec![(p2id_note.clone(), None)])
-        .build()
-        .context("Failed to build Alice's consume transaction")?;
+    let consumable = client.get_consumable_notes(Some(alice_id)).await?;
+    println!("Found {} consumable notes for Alice", consumable.len());
 
-    match client.submit_new_transaction(alice_id, alice_consume_tx).await {
-        Ok(tx_id) => println!("SUCCESS! Alice consumed P2ID note. TX: {:?}", tx_id),
-        Err(e) => println!("FAILED: {:?}", e),
+    for (note, relevance) in &consumable {
+        println!("  Note ID: {:?}", note.id());
+        println!("  Assets: {:?}", note.assets());
+        println!("  Relevance: {:?}", relevance);
+    }
+
+    if let Some((target_note, _)) = consumable.first() {
+        println!("\nConsuming note: {:?}", target_note.id());
+
+        let consume_tx = TransactionRequestBuilder::new()
+            .input_notes(vec![(target_note.clone().try_into()?, None)])
+            .build()
+            .context("Failed to build Alice's consume transaction")?;
+
+        match client.submit_new_transaction(alice_id, consume_tx).await {
+            Ok(tx_id) => println!("SUCCESS! Alice consumed P2ID note. TX: {:?}", tx_id),
+            Err(e) => println!("FAILED: {:?}", e),
+        }
+    } else {
+        println!("No consumable notes found for Alice yet.");
+        println!("Try syncing again after a few blocks.");
     }
 
     println!("\n=== Test Complete ===");

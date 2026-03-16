@@ -65,10 +65,10 @@ const SWAPP_NOTE_IDX = 0x0080
 # =================================================================================================
 
 # SWAP script expects exactly 14 note inputs
-const ERR_SWAP_WRONG_NUMBER_OF_INPUTS="PSWAP wrong number of inputs"
+const ERR_PSWAP_WRONG_NUMBER_OF_INPUTS="PSWAP wrong number of inputs"
 
 # SWAP script requires exactly one note asset
-const ERR_SWAP_WRONG_NUMBER_OF_ASSETS="PSWAP wrong number of assets"
+const ERR_PSWAP_WRONG_NUMBER_OF_ASSETS="PSWAP wrong number of assets"
 
 # PRICE CALCULATION
 # =================================================================================================
@@ -459,7 +459,7 @@ end
 
 # => []
 proc execute_pswap
-    push.OFFERED_ASSET_WORD exec.active_note::get_assets assert.err=ERR_SWAP_WRONG_NUMBER_OF_ASSETS drop
+    push.OFFERED_ASSET_WORD exec.active_note::get_assets assert.err=ERR_PSWAP_WRONG_NUMBER_OF_ASSETS drop
     # => []
 
     mem_loadw_be.OFFERED_ASSET_WORD
@@ -569,19 +569,19 @@ begin
     # => [NOTE_ARGS]
     # Stack: [input_amount, inflight_amount, 0, 0]
 
-    mem_store.AMT_REQUESTED_IN      
+    mem_store.AMT_REQUESTED_IN
     # Stack: [inflight_amount, 0, 0]
 
-    mem_store.AMT_REQUESTED_INFLIGHT 
-    # Stack: [inflight_amount, 0, 0]  
-    drop drop                       
+    mem_store.AMT_REQUESTED_INFLIGHT
+    # Stack: [inflight_amount, 0, 0]
+    drop drop
     # => []
 
     # Load note inputs once for all paths
     push.0 exec.active_note::get_inputs
     # => [num_inputs, inputs_ptr]
 
-    eq.14 assert.err=ERR_SWAP_WRONG_NUMBER_OF_INPUTS
+    eq.14 assert.err=ERR_PSWAP_WRONG_NUMBER_OF_INPUTS
     # => [inputs_ptr]
 
     drop
@@ -599,5 +599,4 @@ begin
     else
         exec.execute_pswap
     end
-
 end

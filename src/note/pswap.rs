@@ -17,11 +17,11 @@ const PSWAP_MASM_SOURCE: &str = include_str!("../../asm/pswap.masm");
 // NOTE SCRIPT
 // ================================================================================================
 
-// Initialize the SWAPP note script only once by compiling the MASM source
+// Initialize the PSWAP note script only once by compiling the MASM source
 static PSWAP_SCRIPT: LazyLock<NoteScript> = LazyLock::new(|| {
     CodeBuilder::new()
         .compile_note_script(PSWAP_MASM_SOURCE)
-        .expect("Failed to compile PSWAP.masm")
+        .expect("Failed to compile pswap.masm")
 });
 
 // PSWAP NOTE
@@ -320,10 +320,11 @@ impl PswapNote {
         let inputs = original_swap_note.recipient().inputs();
         let (_, _, _, swap_count, creator_account_id) = Self::parse_inputs(inputs.values())?;
 
-        // Derive P2ID serial: hmerge(swap_count_word, original_serial) matching PSWAP.masm
+        // Derive P2ID serial matching PSWAP.masm: swapw then hmerge
+        // hmerge([A_on_top, B_below]) = Rpo256::merge(&[B, A]) due to internal SwapW
         let swap_count_word = Word::from([Felt::new(swap_count + 1), ZERO, ZERO, ZERO]);
         let original_serial = original_swap_note.recipient().serial_num();
-        let p2id_serial_digest = Rpo256::merge(&[swap_count_word.into(), original_serial.into()]);
+        let p2id_serial_digest = Rpo256::merge(&[original_serial.into(), swap_count_word.into()]);
         let p2id_serial_num: Word = Word::from(p2id_serial_digest);
 
         // P2ID recipient is the creator (who receives the payback)
